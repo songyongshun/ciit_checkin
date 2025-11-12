@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ciit-checkin"
+version = "0.1.0"
+
+authors = [
+  {name = "Yongshun Song", email = "ys_song@foxmail.com"}
+]
+maintainers = [
+  {name = "Yongshun Song", email = "ys_song@foxmail.com"}
+]
+
+description = "简易签到系统：提供基于 HTTP 的签到表单、管理页面与导出 CSV 功能，适合教室点名与记录。"
+
+readme = "README.md"
+
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["ciit", "checkin", "attendance", "csv", "admin"]
+
+[project.scripts]
+checkin = "checkin:checkin_server"
+
+[tool.setuptools.package-data]
+checkin = ["*.html"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

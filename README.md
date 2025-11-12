@@ -1,0 +1,115 @@
+# 项目说明
+简要说明项目用途：一个用于签到的轻量服务，提供前端签到页面和管理员页面，用于管理名单、保存签到记录（CSV）与重置数据。
+
+# 运行方法
+1. 进入项目根目录（包含 `server.py`）。
+2. 推荐创建虚拟环境并安装依赖：
+    ```bash
+    python -m venv venv
+    source venv/Scripts/activate   # Windows: venv\Scripts\activate
+    pip install -r requirements.txt
+    ```
+3. 启动服务（任选其一）：
+    - 直接运行脚本：
+      ```bash
+      python server.py
+      ```
+    - 或使用 Flask（若适用）：
+      ```bash
+      export FLASK_APP=server.py
+      flask run --host=0.0.0.0 --port=5000
+      ```
+4. 默认访问地址（按实际日志或配置调整）：
+    - 签到页面（前端）：http://localhost:5000/  或 http://localhost:5000/checkin
+    - 管理页面： http://localhost:5000/admin  或 http://localhost:5000/manage
+
+# 配置说明
+- 工作目录：服务以启动时的当前工作目录为基准读取/写入文件。建议从项目根目录启动。
+- 配置文件（示例路径，可根据代码调整）：
+  - data/name.txt — 名单
+  - data/checkins.csv — 签到记录（CSV）
+  - data/room_info.txt — 房间或活动相关配置
+
+# 文件位置与格式
+- data/name.txt
+  - 路径示例：./data/name.txt
+  - 格式：UTF-8，逐行一个姓名或记录。示例：
+     ```
+     张三
+     李四
+     王五
+     ```
+  - 如需额外字段（例如 id 或工号），可采用逗号分隔：`name,id`（需与代码解析方式一致）。
+
+- data/checkins.csv
+  - 路径示例：./data/checkins.csv
+  - 推荐字段（CSV首行头部）：timestamp,name,room,notes
+  - 示例内容：
+     ```
+     timestamp,name,room,notes
+     2025-11-11T09:02:15,张三,RoomA,第一次签到
+     2025-11-11T09:10:40,李四,RoomB,
+     ```
+
+- data/room_info.txt
+  - 路径示例：./data/room_info.txt
+  - 常见格式（选择与代码匹配的格式）：
+     - CSV 格式（room_id,display_name,capacity）：
+        ```
+        RoomA,一号教室,30
+        RoomB,二号教室,25
+        ```
+     - 或 key=value 风格：
+        ```
+        RoomA.name=一号教室
+        RoomA.capacity=30
+        RoomB.name=二号教室
+        RoomB.capacity=25
+        ```
+
+# 启动后常用操作
+- 访问签到页面：在浏览器打开签到 URL，输入姓名或选择名单进行签到，界面操作通常会将记录追加到 `data/checkins.csv`。
+- 访问管理页面：打开管理 URL，可查看/编辑名单、导出 CSV、或执行重置操作（具体按钮/功能与实现相关）。
+- 保存操作：在管理页面点击“保存”时，名单应写入 `data/name.txt`，签到记录写入 `data/checkins.csv`。确认服务器进程有写权限。
+- 重置操作：管理页面“重置”通常会清空或重命名当天的 CSV。若无界面，手动操作可：
+  ```bash
+  # 清空签到记录
+  > data/checkins.csv
+  # 或备份再清空
+  mv data/checkins.csv data/checkins-$(date +%F).csv
+  ```
+
+# 示例 room_info.txt 片段
+CSV 风格：
+```
+RoomA,主会场,100
+RoomB,分会场1,40
+RoomC,分会场2,40
+```
+key=value 风格：
+```
+RoomA.name=主会场
+RoomA.capacity=100
+RoomB.name=分会场1
+RoomB.capacity=40
+```
+
+# 常见故障排查
+- 页面无法访问
+  - 检查 server.py 是否在运行、控制台是否报错。
+  - 检查端口是否被占用或防火墙阻挡。
+- 依赖缺失或导入错误
+  - 确认已安装 requirements.txt 中的包，使用正确的 Python 版本。
+- 文件读写失败
+  - 检查 data 目录是否存在、服务器用户是否有读写权限。
+  - Windows 路径注意反斜杠和工作目录；以项目根目录启动服务。
+- 中文/编码问题
+  - 确保所有文本文件使用 UTF-8 编码，避免 BOM 或其它编码导致解析错误。
+- 名单/CSV 格式不生效
+  - 与代码中解析逻辑保持一致（是否期望逗号分隔、是否跳过空行、首行是否为头部）。
+- 无法保存/重置
+  - 确认管理页面的按钮触发的 API 没有返回错误（检查浏览器开发者工具的网络请求和服务器日志）。
+- 日志与调试
+  - 查看控制台日志以获取异常栈信息；可在开发环境开启更详细的日志级别。
+
+如需将以上路径或字段名与代码严格对齐，请提供 server.py 或配置片段以便精确修改 README。

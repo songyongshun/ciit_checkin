@@ -1,0 +1,9 @@
+classrooms:
+  - id: "1056"
+    room_number: "1056"
+    row: 6
+    column: 8
+  - id: "1058"
+    room_number: "1058"
+    row: 4
+    column: 12

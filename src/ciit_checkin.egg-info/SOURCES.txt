@@ -1,0 +1,13 @@
+LICENSE
+README.md
+pyproject.toml
+src/checkin/__init__.py
+src/checkin/admin.html
+src/checkin/admin.py
+src/checkin/checkin.html
+src/checkin/server.py
+src/ciit_checkin.egg-info/PKG-INFO
+src/ciit_checkin.egg-info/SOURCES.txt
+src/ciit_checkin.egg-info/dependency_links.txt
+src/ciit_checkin.egg-info/entry_points.txt
+src/ciit_checkin.egg-info/top_level.txt
