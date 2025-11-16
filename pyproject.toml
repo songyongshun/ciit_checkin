@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ciit-checkin"
-version = "0.1.0"
+version = "0.1.1"
 
 authors = [
   {name = "Yongshun Song", email = "ys_song@foxmail.com"}
@@ -20,6 +20,10 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["ciit", "checkin", "attendance", "csv", "admin"]
+
+dependencies = [
+    "PyYAML"
+]
 
 [project.scripts]
 checkin = "checkin:checkin_server"
