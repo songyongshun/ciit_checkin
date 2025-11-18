@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ciit-checkin"
-version = "0.1.1"
+version = "0.1.2"
 
 authors = [
   {name = "Yongshun Song", email = "ys_song@foxmail.com"}
@@ -27,6 +27,7 @@ dependencies = [
 
 [project.scripts]
 checkin = "checkin:checkin_server"
+gen_qrcode = "checkin:gen_qrcode"
 
 [tool.setuptools.package-data]
 checkin = ["*.html"]

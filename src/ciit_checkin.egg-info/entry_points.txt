@@ -1,2 +1,3 @@
 [console_scripts]
 checkin = checkin:checkin_server
+gen_qrcode = checkin:gen_qrcode

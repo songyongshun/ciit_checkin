@@ -1,27 +1,36 @@
 # 项目说明
 简要说明项目用途：一个用于签到的轻量服务，提供前端签到页面和管理员页面，用于管理名单、保存签到记录（CSV）与重置数据。
 
+# 安装方法
+
+``` 
+pip install ciit-checkin
+```
+
 # 运行方法
-1. 进入项目根目录（包含 `server.py`）。
-2. 推荐创建虚拟环境并安装依赖：
-    ```bash
-    python -m venv venv
-    source venv/Scripts/activate   # Windows: venv\Scripts\activate
-    pip install -r requirements.txt
-    ```
-3. 启动服务（任选其一）：
+1. 创建工作目录，比如`/opt/checkin`
+2. 在工作目录下创建配置文件，比如`room_info.yaml`(参考`config_example`里的格式)
+```
+classrooms:
+  - id: "1056"
+    room_number: "1056"
+    row: 6
+    column: 8
+  - id: "1058"
+    room_number: "1058"
+    row: 4
+    column: 12
+```
+3. 启动服务：
     - 直接运行脚本：
       ```bash
-      python server.py
+      checkin -c room_info.yaml --port 8000 
       ```
-    - 或使用 Flask（若适用）：
-      ```bash
-      export FLASK_APP=server.py
-      flask run --host=0.0.0.0 --port=5000
-      ```
+    - 或者安装成service.
+
 4. 默认访问地址（按实际日志或配置调整）：
-    - 签到页面（前端）：http://localhost:5000/  或 http://localhost:5000/checkin
-    - 管理页面： http://localhost:5000/admin  或 http://localhost:5000/manage
+    - 签到页面（前端）：http://localhost:8000/checkin-{num}.html
+    - 管理页面： http://localhost:5000/check/admin.html
 
 # 配置说明
 - 工作目录：服务以启动时的当前工作目录为基准读取/写入文件。建议从项目根目录启动。
