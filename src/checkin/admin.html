@@ -71,11 +71,11 @@
   <h2>签到情况</h2>
   {{table_html}}
   <div class="label">讲台</div>
-  <form method="POST" action="/{{room_number}}/save">
+  <form method="POST" action="/checkin/{{classroom_id}}/save">
   <input type="hidden" name="action" value="save">
   <button type="submit" class="btn">保存为 CSV</button>
   </form>
-  <form method="POST" action="/{{room_number}}/reset" onsubmit="return confirm('确定要重置所有数据吗？此操作不可恢复！');">
+  <form method="POST" action="/checkin/{{classroom_id}}/reset" onsubmit="return confirm('确定要重置所有数据吗？此操作不可恢复！');">
   <input type="hidden" name="action" value="reset">
   <button type="submit" class="btn btn-reset">重置</button>
   </form>
