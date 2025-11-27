@@ -2,14 +2,11 @@ LICENSE
 README.md
 pyproject.toml
 src/checkin/__init__.py
-src/checkin/__init__bak.py
 src/checkin/admin.html
 src/checkin/admin.py
 src/checkin/checkin.html
 src/checkin/manage.html
-src/checkin/qrcode-gen.py
 src/checkin/server.py
-src/checkin/temp.py
 src/ciit_checkin.egg-info/PKG-INFO
 src/ciit_checkin.egg-info/SOURCES.txt
 src/ciit_checkin.egg-info/dependency_links.txt

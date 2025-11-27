@@ -8,15 +8,65 @@ import subprocess
 from . import admin
 import qrcode
 from PIL import ImageDraw, ImageFont
+import sqlite3
+
+DATABASE_PATH = "checkin.db"
+
+def init_database():
+    """初始化数据库，创建 classrooms 表"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS classrooms (
+            id TEXT PRIMARY KEY,
+            row INTEGER NOT NULL,
+            column INTEGER NOT NULL
+        )
+    ''')
+    # 插入默认教室（仅当表为空时）
+    cursor.execute("SELECT COUNT(*) FROM classrooms")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO classrooms (id, row, column) VALUES (?, ?, ?)", ("0001", 4, 12))
+    conn.commit()
+    conn.close()
+
+def get_all_classrooms():
+    """从数据库获取所有教室配置"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, row, column FROM classrooms")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": r[0], "row": r[1], "column": r[2]} for r in rows]
+
+def add_classroom(classroom_id, row, column):
+    """添加教室到数据库"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO classrooms (id, row, column) VALUES (?, ?, ?)",
+                   (classroom_id, row, column))
+    conn.commit()
+    conn.close()
+
+def delete_classroom(classroom_id):
+    """从数据库删除教室"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM classrooms WHERE id = ?", (classroom_id,))
+    conn.commit()
+    conn.close()
+
+def get_classroom_by_id(classroom_id):
+    """根据 ID 获取教室配置"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, row, column FROM classrooms WHERE id = ?", (classroom_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row  # (id, row, col) or None
 
 class CheckinHandler(BaseHTTPRequestHandler):
-    # 类变量 - 所有实例共享
-    dynamic_config = {
-        "classrooms": [
-            {"id": "0001", "row": 4, "column": 12}
-        ],
-        "public_ip": "127.0.0.1"  # 默认值，将在 run_server 中被覆盖
-    }
+    public_ip = "127.0.0.1"  # 将作为实例属性或通过 run_server 设置
 
     def _render_form(self, message=''):
         try:
@@ -48,19 +98,12 @@ class CheckinHandler(BaseHTTPRequestHandler):
             return b"<h2>Manage template missing</h2>"
 
     def _get_room_config(self, classroom_id):
-        """从内存配置获取教室信息"""
+        """从数据库获取教室信息"""
         print(f"[DEBUG] Looking for classroom_id: {classroom_id}")
-        # ✅ 使用类名访问
-        for room in CheckinHandler.dynamic_config["classrooms"]:
-            print(f"[DEBUG] Checking room: {room}")
-            if room.get("id") == classroom_id:
-                result = (
-                    room.get("id"),
-                    room.get("row", 4),
-                    room.get("column", 12)
-                )
-                print(f"[DEBUG] Found room config: {result}")
-                return result
+        result = get_classroom_by_id(classroom_id)
+        if result:
+            print(f"[DEBUG] Found room config: {result}")
+            return result
         print(f"[DEBUG] Classroom {classroom_id} not found")
         return (None, None, None)
 
@@ -70,7 +113,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
         if not classroom_id:
             return False
             
-        public_ip = CheckinHandler.dynamic_config.get("public_ip", "localhost")
+        public_ip = CheckinHandler.public_ip
         total_seats = min(row * col, 48)
         
         # 创建输出目录
@@ -234,8 +277,8 @@ class CheckinHandler(BaseHTTPRequestHandler):
 
         # 新增：列出所有教室
         if path == "/checkin/manage/list":
-            classrooms = CheckinHandler.dynamic_config["classrooms"]
-            public_ip = CheckinHandler.dynamic_config.get("public_ip", "localhost")
+            classrooms = get_all_classrooms()
+            public_ip = getattr(CheckinHandler, 'public_ip', 'localhost')
             
             html = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>教室列表</title></head><body>"
             html += "<h2>当前配置的教室</h2>"
@@ -340,18 +383,12 @@ class CheckinHandler(BaseHTTPRequestHandler):
             body = self.rfile.read(content_length).decode('utf-8')
             params = urllib.parse.parse_qs(body)
             
-            new_classroom = {
-                "id": params.get("classroom_id", [""])[0],
-                "row": int(params.get("row", ["4"])[0]),
-                "column": int(params.get("column", ["12"])[0])
-            }
+            classroom_id = params.get("classroom_id", [""])[0]
+            row = int(params.get("row", ["4"])[0])
+            column = int(params.get("column", ["12"])[0])
             
-            # 避免重复教室ID
-            existing_ids = {room["id"] for room in CheckinHandler.dynamic_config["classrooms"]}
-            if new_classroom["id"] not in existing_ids:
-                CheckinHandler.dynamic_config["classrooms"].append(new_classroom)
+            add_classroom(classroom_id, row, column)
             
-            classroom_id = new_classroom["id"]
             self.send_response(302)
             self.send_header('Location', f"/checkin/{classroom_id}/admin.html")
             self.end_headers()
@@ -364,16 +401,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(body)
             
             classroom_id_to_delete = params.get("classroom_id", [""])[0]
-            
-            # 过滤掉要删除的教室
-            CheckinHandler.dynamic_config["classrooms"] = [
-                room for room in CheckinHandler.dynamic_config["classrooms"]
-                if room["id"] != classroom_id_to_delete
-            ]
-            
-            # 如果删除后没有教室了，保留一个默认
-            if not CheckinHandler.dynamic_config["classrooms"]:
-                CheckinHandler.dynamic_config["classrooms"] = [{"id": "0001", "row": 4, "column": 12}]
+            delete_classroom(classroom_id_to_delete)
             
             self.send_response(302)
             self.send_header('Location', "/checkin/manage.html")
@@ -558,8 +586,11 @@ class CheckinHandler(BaseHTTPRequestHandler):
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000, room_info_path=None):
-    # 设置 public_ip 为 host 参数值
-    CheckinHandler.dynamic_config["public_ip"] = host
+    # 初始化数据库
+    init_database()
+    
+    # 设置 public_ip
+    CheckinHandler.public_ip = host
     
     addr = (host, int(port))
     server = HTTPServer(addr, CheckinHandler)
