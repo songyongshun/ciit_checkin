@@ -97,6 +97,12 @@ class CheckinHandler(BaseHTTPRequestHandler):
   .btn-stop:hover {{
     background-color: #e68a00;
   }}
+  .btn-record {{
+    background-color: #9C27B0;
+  }}
+  .btn-record:hover {{
+    background-color: #7B1FA2;
+  }}
   .label {{
     text-align: center;
     margin-top: 15px;
@@ -111,6 +117,20 @@ class CheckinHandler(BaseHTTPRequestHandler):
     font-weight: bold;
     color: #e91e63;
   }}
+  .record-table {{
+    width: 100%;
+    margin-top: 20px;
+    border: 1px solid #ddd;
+    border-collapse: collapse;
+  }}
+  .record-table th, .record-table td {{
+    padding: 10px;
+    text-align: left;
+    border: 1px solid #ddd;
+  }}
+  .record-table th {{
+    background-color: #f2f2f2;
+  }}
   </style>
 </head>
 <body>
@@ -120,9 +140,14 @@ class CheckinHandler(BaseHTTPRequestHandler):
   <div class="label">讲台</div>
   <div class="status">{status_text}</div>
   <form method="POST" action="/checkin/{classroom_id}/save">
-    <input type="hidden" name="action" value="save">
-    <button type="submit" class="btn">保存为 CSV</button>
+    <div class="form-group">
+      <label for="course">课程名称:</label>
+      <input type="text" id="course" name="course" required>
+    </div>
+    <button type="submit" class="btn">保存</button>
+    <button type="submit" class="btn btn-record" formaction="/checkin/{classroom_id}/view-records">签到记录</button>
   </form>
+
   {control_buttons}
   <form method="POST" action="/checkin/{classroom_id}/reset" onsubmit="return confirm('确定要重置所有数据吗？此操作不可恢复！');">
     <input type="hidden" name="action" value="reset">
@@ -149,6 +174,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
   <form method="POST" action="/checkin/{classroom_id}/start-checkin">
     <button type="submit" class="btn btn-start">开始签到</button>
   </form>'''.format(classroom_id=classroom_id)
+
 
         html = self._admin_template.format(
             table_html=table_html,
@@ -317,6 +343,120 @@ class CheckinHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
 
+        # ✅ 新增：查看签到记录（GET请求）
+        record_match = re.match(r'^/checkin/(\d{3,4})/view-records$', path)
+        if record_match:
+            classroom_id = record_match.group(1)
+            # 从查询参数中获取课程名称
+            query = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(query)
+            course_name = params.get("course", [""])[0]
+            
+            if not course_name:
+                html_resp = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>查询失败</title></head>
+<body><p>请输入课程名称</p><p><a href="/checkin/{classroom_id}/admin.html">返回</a></p></body></html>""".format(classroom_id=classroom_id)
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(html_resp.encode('utf-8'))
+                return
+            
+            # 查询签到记录
+            from .database import get_checkin_summary_by_course
+            records = get_checkin_summary_by_course(course_name)
+            
+            # 生成记录表格
+            if records:
+                table_rows = ""
+                for record in records:
+                    table_rows += f"""
+                <tr>
+                    <td>{record['course']}</td>
+                    <td>{record['classroom_id']}</td>
+                    <td>{record['count']}</td>
+                    <td>{record['save_time']}</td>
+                </tr>"""
+                table_html = f"""
+            <table class="record-table">
+                <tr>
+                    <th>课程名称</th>
+                    <th>教室ID</th>
+                    <th>签到人数</th>
+                    <th>保存时间</th>
+                </tr>
+                {table_rows}
+            </table>"""
+            else:
+                table_html = "<p>未找到相关签到记录</p>"
+            
+            html_resp = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>签到记录</title>
+<style>
+body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f5f5f5;
+}}
+.container {{
+    max-width: 800px;
+    margin: 0 auto;
+    background-color: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}}
+.record-table {{
+    width: 100%;
+    margin-top: 20px;
+    border: 1px solid #ddd;
+    border-collapse: collapse;
+}}
+.record-table th, .record-table td {{
+    padding: 10px;
+    text-align: left;
+    border: 1px solid #ddd;
+}}
+.record-table th {{
+    background-color: #f2f2f2;
+}}
+.btn {{
+    display: inline-block;
+    margin-top: 20px;
+    padding: 10px 20px;
+    background-color: #4CAF50;
+    color: white;
+    text-decoration: none;
+    border-radius: 4px;
+}}
+.btn:hover {{
+    background-color: #45a049;
+}}
+</style>
+</head>
+<body>
+  <div class="container">
+    <h2>签到记录</h2>
+    {table_html}
+    <a href="/checkin/{classroom_id}/admin.html" class="btn">返回管理页面</a>
+  </div>
+</body>
+</html>"""
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html_resp.encode('utf-8'))
+            return
+
+        # ✅ 修改路由: /checkin/manage.html
+        if path == "/checkin/manage.html":
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(self._render_manage())
+            return
+
         # 新增：提供 qrcode 目录下的静态文件（PDF/PNG）
         qr_match = re.match(r'^/checkin/(\d{3,4})/qrcode/(.+)$', path)
         if qr_match:
@@ -327,6 +467,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
             if not (filename.endswith('.pdf') or filename.endswith('.png')):
                 self.send_response(403)
                 self.end_headers()
+                self.wfile.write(b"Forbidden: Invalid file type")
                 return
 
             file_path = os.path.join("data", classroom_id, "qrcode", filename)
@@ -344,14 +485,6 @@ class CheckinHandler(BaseHTTPRequestHandler):
                 self.send_response(404)
                 self.end_headers()
                 self.wfile.write(b"<h2>File not found</h2>")
-            return
-
-        # ✅ 修改路由: /checkin/manage.html
-        if path == "/checkin/manage.html":
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(self._render_manage())
             return
 
         # 新增：列出所有教室
@@ -476,22 +609,15 @@ class CheckinHandler(BaseHTTPRequestHandler):
         row = row or 4
         col = col or 12
         
-        # 读取签到数据
-        data_dir = "data"
-        name_file = os.path.join(data_dir, f"name-{classroom_id}.txt")
-        entries = {}
-        if os.path.exists(name_file):
-            with open(name_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    parts = line.strip().split(",", 1)
-                    if len(parts) == 2:
-                        entries[parts[0]] = parts[1]
-
+        # 从 checkin-temp 表读取签到数据
+        from .database import get_temp_checkins_by_classroom
+        temp_checkins = get_temp_checkins_by_classroom(classroom_id)
+        
         # 构建表格
         table = [["" for _ in range(col)] for _ in range(row)]
-        for prefix_str, name in entries.items():
+        for name, seat_number in temp_checkins:
             try:
-                idx = int(prefix_str) - 1
+                idx = seat_number - 1
                 r = idx // col
                 c = idx % col
                 if 0 <= r < row and 0 <= c < col:
@@ -512,6 +638,113 @@ class CheckinHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
 
+        # ✅ 查看签到记录
+        record_match = re.match(r'^/checkin/(\d{3,4})/view-records$', path)
+        if record_match:
+            classroom_id = record_match.group(1)
+            # 获取课程名称
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            params = urllib.parse.parse_qs(body)
+            course_name = params.get("course", [""])[0]
+            
+            if not course_name:
+                html_resp = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>查询失败</title></head>
+<body><p>请输入课程名称</p><p><a href="/checkin/{classroom_id}/admin.html">返回</a></p></body></html>""".format(classroom_id=classroom_id)
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(html_resp.encode('utf-8'))
+                return
+            
+            # 查询签到记录
+            from .database import get_checkin_summary_by_course
+            records = get_checkin_summary_by_course(course_name)
+            
+            # 生成记录表格
+            if records:
+                table_rows = ""
+                for record in records:
+                    table_rows += f"""
+                <tr>
+                    <td>{record['course']}</td>
+                    <td>{record['classroom_id']}</td>  <!-- 新增教室ID列 -->
+                    <td>{record['count']}</td>
+                    <td>{record['save_time']}</td>
+                </tr>"""
+                table_html = f"""
+            <table class="record-table">
+                <tr>
+                    <th>课程名称</th>
+                    <th>教室ID</th>  <!-- 新增表头 -->
+                    <th>签到人数</th>
+                    <th>保存时间</th>
+                </tr>
+                {table_rows}
+            </table>"""
+            else:
+                table_html = "<p>未找到相关签到记录</p>"
+            
+            html_resp = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>签到记录</title>
+<style>
+body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f5f5f5;
+}}
+.container {{
+    max-width: 800px;
+    margin: 0 auto;
+    background-color: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}}
+.record-table {{
+    width: 100%;
+    margin-top: 20px;
+    border: 1px solid #ddd;
+    border-collapse: collapse;
+}}
+.record-table th, .record-table td {{
+    padding: 10px;
+    text-align: left;
+    border: 1px solid #ddd;
+}}
+.record-table th {{
+    background-color: #f2f2f2;
+}}
+.btn {{
+    display: inline-block;
+    margin-top: 20px;
+    padding: 10px 20px;
+    background-color: #4CAF50;
+    color: white;
+    text-decoration: none;
+    border-radius: 4px;
+}}
+.btn:hover {{
+    background-color: #45a049;
+}}
+</style>
+</head>
+<body>
+  <div class="container">
+    <h2>签到记录</h2>
+    {table_html}
+    <a href="/checkin/{classroom_id}/admin.html" class="btn">返回管理页面</a>
+  </div>
+</body>
+</html>"""
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html_resp.encode('utf-8'))
+            return
+
         # ✅ 添加教室: /checkin/manage/add
         if path == "/checkin/manage/add":
             content_length = int(self.headers.get('Content-Length', 0))
@@ -525,7 +758,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
             add_classroom(classroom_id, row, column)
             
             self.send_response(302)
-            self.send_header('Location', f"/checkin/{classroom_id}/admin.html")
+            self.send_header('Location', "/checkin/manage/list")
             self.end_headers()
             return
 
@@ -755,12 +988,21 @@ class CheckinHandler(BaseHTTPRequestHandler):
 
         if save_match:
             classroom_id = save_match.group(1)
-            csv_filename = admin.save_csv_to_dir(classroom_id=classroom_id, room_info_path=None)
+            # 获取课程名称
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            params = urllib.parse.parse_qs(body)
+            course_name = params.get("course", [""])[0]
+            
+            # 保存到数据库
+            from .database import save_checkin_records
+            count = save_checkin_records(classroom_id, course_name)
+            
             redirect_url = f"/checkin/{classroom_id}/admin.html"
             html_resp = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>保存成功</title>
 <meta http-equiv="refresh" content="2;url={redirect_url}"></head>
-<body><p>签到记录已保存为 <code>{csv_filename}</code>，2秒后返回...</p></body></html>"""
+<body><p>已保存 {count} 条签到记录，2秒后返回...</p></body></html>"""
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
@@ -843,7 +1085,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
                 return
 
             classroom_id = class_match.group(1)
-            seq = class_match.group(2)
+            seq = int(class_match.group(2))
 
             # 检查是否允许签到
             if not CheckinHandler.checkin_enabled.get(classroom_id, False):
@@ -862,15 +1104,14 @@ class CheckinHandler(BaseHTTPRequestHandler):
                     status = 400
                 else:
                     name = row[0]
-                    data_dir = "data"
-                    os.makedirs(data_dir, exist_ok=True)
-                    name_file = os.path.join(data_dir, f"name-{classroom_id}.txt")
-
-                    with open(name_file, 'a', encoding='utf-8') as f:
-                        f.write(f"{seq},{name}\n")
-
-                    message = f"签到成功：{name}"
-                    status = 200
+                    # 保存到 checkin-temp 表
+                    from .database import add_temp_checkin
+                    if add_temp_checkin(student_id, classroom_id, seq):
+                        message = f"签到成功：{name}"
+                        status = 200
+                    else:
+                        message = "签到失败"
+                        status = 500
         else:
             message = "缺少学号"
             status = 400
@@ -880,6 +1121,24 @@ class CheckinHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(self._render_form(message=message))
 
+        # ✅ 重置操作
+        reset_match = re.match(r'^/checkin/(\d{3,4})/reset$', path)
+        if reset_match:
+            classroom_id = reset_match.group(1)
+            # 清空 checkin-temp 表中的数据
+            from .database import clear_temp_checkins
+            clear_temp_checkins(classroom_id)
+            
+            redirect_url = f"/checkin/{classroom_id}/admin.html"
+            html_resp = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>重置成功</title>
+<meta http-equiv="refresh" content="1;url={redirect_url}"></head>
+<body><p>数据已重置，1秒后返回...</p></body></html>"""
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html_resp.encode('utf-8'))
+            return
 
     def _send_import_result(self, message, success=True):
         """返回导入结果页面"""
