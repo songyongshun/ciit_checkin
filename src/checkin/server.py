@@ -719,44 +719,56 @@ class CheckinHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length) if content_length > 0 else b''
         content_type = self.headers.get('Content-Type', '')
 
-        name = None
+        student_id = None
         if 'application/json' in content_type:
             try:
                 data = json.loads(body.decode('utf-8'))
-                name = data.get('name') or data.get('user_id')
+                student_id = data.get('student_id') or data.get('user_id')
             except json.JSONDecodeError:
-                name = None
+                student_id = None
         else:
             try:
                 parsed = urllib.parse.parse_qs(body.decode('utf-8'))
-                name = parsed.get('name', [None])[0]
+                student_id = parsed.get('student_id', [None])[0]
             except Exception:
-                name = None
+                student_id = None
 
-        if name:
-            # ✅ 提取 classroom_id 和 seq from /checkin/{id}/checkin-XX.html
+        if student_id:
+            # 提取 classroom_id 和 seq
             class_match = re.match(r'^/checkin/(\d{3,4})/checkin-(\d{2})\.html$', path)
             if not class_match:
                 self.send_response(400)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write("<h2>签到请求路径无效，请通过 /checkin/{教室ID}/checkin-XX.html 提交</h2>".encode('utf-8'))
+                self.wfile.write("<h2>签到请求路径无效，请通过二维码访问</h2>".encode('utf-8'))
                 return
 
             classroom_id = class_match.group(1)
             seq = class_match.group(2)
 
-            data_dir = "data"
-            os.makedirs(data_dir, exist_ok=True)
-            name_file = os.path.join(data_dir, f"name-{classroom_id}.txt")
+            # 查询数据库获取姓名
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM students WHERE student_id = ?", (student_id,))
+            row = cursor.fetchone()
+            conn.close()
 
-            with open(name_file, 'a', encoding='utf-8') as f:
-                f.write(f"{seq},{name}\n")
+            if not row:
+                message = "学号未找到，请确认是否已导入名单"
+                status = 400
+            else:
+                name = row[0]
+                data_dir = "data"
+                os.makedirs(data_dir, exist_ok=True)
+                name_file = os.path.join(data_dir, f"name-{classroom_id}.txt")
 
-            message = f"已保存: {name}"
-            status = 200
+                with open(name_file, 'a', encoding='utf-8') as f:
+                    f.write(f"{seq},{name}\n")
+
+                message = f"签到成功：{name}"
+                status = 200
         else:
-            message = "Missing name or invalid data."
+            message = "缺少学号"
             status = 400
 
         self.send_response(status)
