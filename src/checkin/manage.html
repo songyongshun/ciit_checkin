@@ -15,6 +15,26 @@
     .classroom-list { margin-top: 20px; padding: 15px; background: #f9f9f9; border-radius: 5px; }
     .classroom-item { padding: 8px; border-bottom: 1px solid #eee; }
     .classroom-item:last-child { border-bottom: none; }
+    .class-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px;
+      margin: 5px 0;
+      background-color: #f5f5f5;
+      border-radius: 4px;
+    }
+    .delete-btn {
+      background-color: #f44336;
+      color: white;
+      border: none;
+      padding: 5px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .delete-btn:hover {
+      background-color: #d32f2f;
+    }
   </style>
 </head>
 <body>
@@ -61,7 +81,23 @@
     <button type="submit" class="btn-qrcode">生成二维码</button>
   </form>
 
+  <!-- 添加导入学生名单的链接 -->
+  <h2>导入班级学生名单</h2>
+  <p><a href="/checkin/import-student.html" style="text-decoration: none;">
+    <button style="width: auto;">进入导入页面</button>
+  </a></p>
+
   <!-- 教室列表显示区域 -->
   <div id="classroomList"></div>
+
+  <h2>已导入的班级</h2>
+
+  <!-- 隐藏的删除表单 -->
+  <form id="delete-form" action="/checkin/manage/delete-class-students" method="post" style="display:none;">
+    <input type="hidden" id="delete-class-name" name="class_name">
+  </form>
+
+  <!-- 自动加载班级列表 -->
+  <iframe src="/checkin/manage/list-students" style="width:100%; border:none; min-height:200px;"></iframe>
 </body>
 </html>

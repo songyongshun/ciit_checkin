@@ -13,7 +13,7 @@ import sqlite3
 DATABASE_PATH = "checkin.db"
 
 def init_database():
-    """初始化数据库，创建 classrooms 表"""
+    """初始化数据库，创建 classrooms 和 students 表"""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     cursor.execute('''
@@ -21,6 +21,15 @@ def init_database():
             id TEXT PRIMARY KEY,
             row INTEGER NOT NULL,
             column INTEGER NOT NULL
+        )
+    ''')
+    # 创建 students 表，student_id 唯一
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS students (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            class_name TEXT NOT NULL
         )
     ''')
     # 插入默认教室（仅当表为空时）
@@ -64,6 +73,30 @@ def get_classroom_by_id(classroom_id):
     row = cursor.fetchone()
     conn.close()
     return row  # (id, row, col) or None
+
+def get_class_student_counts():
+    """获取每个班级的学生数量"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT class_name, COUNT(*) as count 
+        FROM students 
+        GROUP BY class_name 
+        ORDER BY class_name
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"class_name": r[0], "count": r[1]} for r in rows]
+
+def delete_students_by_class(class_name):
+    """删除指定班级的所有学生"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM students WHERE class_name = ?", (class_name,))
+    count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return count
 
 class CheckinHandler(BaseHTTPRequestHandler):
     public_ip = "127.0.0.1"  # 将作为实例属性或通过 run_server 设置
@@ -285,7 +318,8 @@ class CheckinHandler(BaseHTTPRequestHandler):
             html += f"<p><strong>公共IP:</strong> {public_ip}</p>"
             html += "<ul>"
             for room in classrooms:
-                html += f"<li>教室ID: {room['id']}, 行: {room['row']}, 列: {room['column']}</li>"
+                html += f"<li>教室ID: {room['id']}, 行: {room['row']}, 列: {room['column']} "
+                html += f'<a href="/checkin/{room["id"]}/admin.html" style="margin-left:10px;">查看教室签到情况</a></li>'
             html += "</ul>"
             html += '<p><a href="/checkin/manage.html">返回管理页面</a></p>'
             html += "</body></html>"
@@ -326,6 +360,61 @@ class CheckinHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(self._render_form())
                 return
+
+        # 新增：列出已导入的班级及学生数量
+        if path == "/checkin/manage/list-students":
+            classes = get_class_student_counts()
+            
+            html = '<div style="font-family: Arial, sans-serif;">'
+            if not classes:
+                html += "<p>暂无导入的班级数据</p>"
+            else:
+                for cls in classes:
+                    html += f'''
+                    <div class="class-item">
+                        <span><strong>{cls["class_name"]}</strong> ({cls["count"]} 名学生)</span>
+                        <button class="delete-btn" onclick="parent.deleteClass('{cls["class_name"]}')">删除班级</button>
+                    </div>
+                    '''
+            html += '</div>'
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html.encode('utf-8'))
+            return
+
+        # 新增：返回导入学生页面（动态生成）
+        if path == "/checkin/import-student.html":
+            html = '''<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>导入学生名单</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    .form-group { margin: 15px 0; }
+    input, button { padding: 8px; }
+    button { background: #4CAF50; color: white; border: none; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h2>导入班级学生名单</h2>
+  <form method="POST" action="/checkin/manage/import-students" enctype="multipart/form-data">
+    <div class="form-group">
+      <label for="csv_file">选择 CSV 文件：</label>
+      <input type="file" id="csv_file" name="csv_file" accept=".csv" required>
+    </div>
+    <button type="submit">上传并导入</button>
+  </form>
+  <p><a href="/checkin/manage.html">返回管理页面</a></p>
+</body>
+</html>'''
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html.encode('utf-8'))
+            return
 
         self.send_response(404)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -502,6 +591,97 @@ class CheckinHandler(BaseHTTPRequestHandler):
             self.wfile.write(html.encode('utf-8'))
             return
 
+        # 新增：导入学生名单
+        if path == "/checkin/manage/import-students":
+            content_type = self.headers.get('Content-Type', '')
+            if 'multipart/form-data' not in content_type:
+                self._send_import_result("无效的请求类型", success=False)
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+
+            # 提取 boundary
+            boundary_match = re.search(r'boundary=([^;]+)', content_type)
+            if not boundary_match:
+                self._send_import_result("无效的 multipart 格式", success=False)
+                return
+            boundary = boundary_match.group(1).strip('"').encode()
+
+            parts = body.split(b'--' + boundary)
+            csv_content = None
+            filename = None
+            for part in parts:
+                if b'name="csv_file"' in part:
+                    # 提取文件名
+                    filename_match = re.search(rb'filename="([^"]+)"', part)
+                    if filename_match:
+                        filename = filename_match.group(1).decode('utf-8')
+                    header_end = part.find(b'\r\n\r\n')
+                    if header_end != -1:
+                        csv_content = part[header_end+4:]
+                        if csv_content.endswith(b'\r\n'):
+                            csv_content = csv_content[:-2]
+                        break
+
+            if not filename or not csv_content:
+                self._send_import_result("未选择文件", success=False)
+                return
+
+            try:
+                import csv
+                from io import StringIO
+                decoded = csv_content.decode('utf-8-sig')
+                reader = csv.reader(StringIO(decoded))
+                students = []
+                seen_ids = set()
+                duplicates = []
+                for row in reader:
+                    if len(row) >= 3:
+                        student_id, name, class_name = row[0].strip(), row[1].strip(), row[2].strip()
+                        if not student_id or not name or not class_name:
+                            continue
+                        if student_id in seen_ids:
+                            duplicates.append(student_id)
+                        else:
+                            seen_ids.add(student_id)
+                            students.append((student_id, name, class_name))
+                
+                if duplicates:
+                    self._send_import_result(f"导入失败：发现重复学号 {', '.join(duplicates)}", success=False)
+                    return
+
+                if not students:
+                    self._send_import_result(f"文件 '{filename}' 为空或格式不正确", success=False)
+                    return
+
+                conn = sqlite3.connect(DATABASE_PATH)
+                cursor = conn.cursor()
+                try:
+                    cursor.executemany(
+                        "INSERT INTO students (student_id, name, class_name) VALUES (?, ?, ?)",
+                        students
+                    )
+                    conn.commit()
+                    self._send_import_result(f"成功导入 '{filename}' 中的 {len(students)} 名学生")
+                except sqlite3.IntegrityError as e:
+                    if "UNIQUE constraint failed" in str(e):
+                        conn.rollback()
+                        # 查询哪些学号已存在
+                        placeholders = ','.join('?' for _ in seen_ids)
+                        cursor.execute(f"SELECT student_id FROM students WHERE student_id IN ({placeholders})", tuple(seen_ids))
+                        existing_ids = [row[0] for row in cursor.fetchall()]
+                        conn.close()
+                        self._send_import_result(f"导入失败：以下学号已存在 {', '.join(existing_ids)}", success=False)
+                    else:
+                        raise
+                finally:
+                    conn.close()
+
+            except Exception as e:
+                self._send_import_result(f"导入失败: {str(e)}", success=False)
+            return
+
         # ✅ 匹配 /checkin/{id}/save 和 /checkin/{id}/reset
         save_match = re.match(r'^/checkin/(\d{3,4})/save$', path)
         reset_match = re.match(r'^/checkin/(\d{3,4})/reset$', path)
@@ -583,6 +763,22 @@ class CheckinHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
         self.wfile.write(self._render_form(message=message))
+
+
+    def _send_import_result(self, message, success=True):
+        """返回导入结果页面"""
+        status = 200 if success else 400
+        html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>导入结果</title></head>
+<body>
+<h2>导入结果</h2>
+<p>{message}</p>
+<p><a href="/checkin/manage.html">返回管理页面</a></p>
+</body></html>"""
+        self.send_response(status)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(html.encode('utf-8'))
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000, room_info_path=None):
