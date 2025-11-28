@@ -343,112 +343,6 @@ class CheckinHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
 
-        # ✅ 新增：查看签到记录（GET请求）
-        record_match = re.match(r'^/checkin/(\d{3,4})/view-records$', path)
-        if record_match:
-            classroom_id = record_match.group(1)
-            # 从查询参数中获取课程名称
-            query = urllib.parse.urlparse(self.path).query
-            params = urllib.parse.parse_qs(query)
-            course_name = params.get("course", [""])[0]
-            
-            if not course_name:
-                html_resp = """<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>查询失败</title></head>
-<body><p>请输入课程名称</p><p><a href="/checkin/{classroom_id}/admin.html">返回</a></p></body></html>""".format(classroom_id=classroom_id)
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/html; charset=utf-8')
-                self.end_headers()
-                self.wfile.write(html_resp.encode('utf-8'))
-                return
-            
-            # 查询签到记录
-            from .database import get_checkin_summary_by_course
-            records = get_checkin_summary_by_course(course_name)
-            
-            # 生成记录表格
-            if records:
-                table_rows = ""
-                for record in records:
-                    table_rows += f"""
-                <tr>
-                    <td>{record['course']}</td>
-                    <td>{record['classroom_id']}</td>
-                    <td>{record['count']}</td>
-                    <td>{record['save_time']}</td>
-                </tr>"""
-                table_html = f"""
-            <table class="record-table">
-                <tr>
-                    <th>课程名称</th>
-                    <th>教室ID</th>
-                    <th>签到人数</th>
-                    <th>保存时间</th>
-                </tr>
-                {table_rows}
-            </table>"""
-            else:
-                table_html = "<p>未找到相关签到记录</p>"
-            
-            html_resp = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>签到记录</title>
-<style>
-body {{
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    margin: 0;
-    padding: 20px;
-    background-color: #f5f5f5;
-}}
-.container {{
-    max-width: 800px;
-    margin: 0 auto;
-    background-color: white;
-    padding: 20px;
-    border-radius: 8px;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-}}
-.record-table {{
-    width: 100%;
-    margin-top: 20px;
-    border: 1px solid #ddd;
-    border-collapse: collapse;
-}}
-.record-table th, .record-table td {{
-    padding: 10px;
-    text-align: left;
-    border: 1px solid #ddd;
-}}
-.record-table th {{
-    background-color: #f2f2f2;
-}}
-.btn {{
-    display: inline-block;
-    margin-top: 20px;
-    padding: 10px 20px;
-    background-color: #4CAF50;
-    color: white;
-    text-decoration: none;
-    border-radius: 4px;
-}}
-.btn:hover {{
-    background-color: #45a049;
-}}
-</style>
-</head>
-<body>
-  <div class="container">
-    <h2>签到记录</h2>
-    {table_html}
-    <a href="/checkin/{classroom_id}/admin.html" class="btn">返回管理页面</a>
-  </div>
-</body>
-</html>"""
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(html_resp.encode('utf-8'))
-            return
-
         # ✅ 修改路由: /checkin/manage.html
         if path == "/checkin/manage.html":
             self.send_response(200)
@@ -638,6 +532,132 @@ body {{
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
 
+        # 新增：删除签到记录
+        if path == "/checkin/delete-record":
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            params = urllib.parse.parse_qs(body)
+            
+            course = params.get("course", [""])[0]
+            save_time = params.get("save_time", [""])[0]
+            classroom_id = params.get("classroom_id", [""])[0]
+            
+            # 调用数据库函数删除记录
+            from .database import delete_checkin_record
+            if delete_checkin_record(course, save_time, classroom_id):
+                # 重新查询记录以刷新页面
+                from .database import get_checkin_summary_by_course
+                records = get_checkin_summary_by_course(course)
+                
+                # 重新渲染页面
+                if records:
+                    table_rows = ""
+                    for record in records:
+                        table_rows += f"""
+                    <tr>
+                        <td>{record['course']}</td>
+                        <td>{record['classroom_id']}</td>
+                        <td>{record['count']}</td>
+                        <td>{record['save_time']}</td>
+                        <td>
+                            <form method="POST" action="/checkin/delete-record" style="display:inline;">
+                                <input type="hidden" name="course" value="{record['course']}">
+                                <input type="hidden" name="save_time" value="{record['save_time']}">
+                                <input type="hidden" name="classroom_id" value="{record['classroom_id']}">
+                                <button type="submit" class="btn-delete">删除记录</button>
+                            </form>
+                        </td>
+                    </tr>"""
+                    table_html = f"""
+                <table class="record-table">
+                    <tr>
+                        <th>课程名称</th>
+                        <th>教室ID</th>
+                        <th>签到人数</th>
+                        <th>保存时间</th>
+                        <th>操作</th>
+                    </tr>
+                    {table_rows}
+                </table>"""
+                else:
+                    table_html = "<p>未找到相关签到记录</p>"
+                
+                html_resp = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>签到记录</title>
+<style>
+body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f5f5f5;
+}}
+.container {{
+    max-width: 800px;
+    margin: 0 auto;
+    background-color: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}}
+.record-table {{
+    width: 100%;
+    margin-top: 20px;
+    border: 1px solid #ddd;
+    border-collapse: collapse;
+}}
+.record-table th, .record-table td {{
+    padding: 10px;
+    text-align: left;
+    border: 1极线 solid #ddd;
+}}
+.record-table th {{
+    background-color: #f2f2f2;
+}}
+.btn {{
+    display: inline-block;
+    margin-top: 20px;
+    padding: 10px 20px;
+    background-color: #4CAF50;
+    color: white;
+    text-decoration: none;
+    border-radius: 4px;
+}}
+.btn:hover {{
+    background-color: #45a049;
+}}
+.btn-delete {{
+    padding: 5px 10px; 
+    background: #f44336; 
+    color: white; 
+    border: none; 
+    cursor: pointer; 
+    border-radius: 4px;
+}}
+</style>
+</head>
+<body>
+  <div class="container">
+    <h2>签到记录</h2>
+    {table_html}
+    <a href="/checkin/{classroom_id}/admin.html" class="btn">返回管理页面</a>
+  </div>
+</body>
+</html>"""
+            else:
+                html_resp = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>删除失败</title></head>
+<body>
+<h2>删除失败</h2>
+<p>记录删除失败，请重试。</p>
+<p><a href="/checkin/manage.html">返回管理页面</a></p>
+</body></html>"""
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html_resp.encode('utf-8'))
+            return
+
         # ✅ 查看签到记录
         record_match = re.match(r'^/checkin/(\d{3,4})/view-records$', path)
         if record_match:
@@ -669,17 +689,26 @@ body {{
                     table_rows += f"""
                 <tr>
                     <td>{record['course']}</td>
-                    <td>{record['classroom_id']}</td>  <!-- 新增教室ID列 -->
+                    <td>{record['classroom_id']}</td>
                     <td>{record['count']}</td>
                     <td>{record['save_time']}</td>
+                    <td>
+                        <form method="POST" action="/checkin/delete-record" style="display:inline;">
+                            <input type="hidden" name="course" value="{record['course']}">
+                            <input type="hidden" name="save_time" value="{record['save_time']}">
+                            <input type="hidden" name="classroom_id" value="{record['classroom_id']}">
+                            <button type="submit" class="btn-delete">删除记录</button>
+                        </form>
+                    </td>
                 </tr>"""
                 table_html = f"""
             <table class="record-table">
                 <tr>
                     <th>课程名称</th>
-                    <th>教室ID</th>  <!-- 新增表头 -->
+                    <th>教室ID</th>
                     <th>签到人数</th>
                     <th>保存时间</th>
+                    <th>操作</th>
                 </tr>
                 {table_rows}
             </table>"""
@@ -728,6 +757,14 @@ body {{
 }}
 .btn:hover {{
     background-color: #45a049;
+}}
+.btn-delete {{
+    padding: 5px 10px; 
+    background: #f44336; 
+    color: white; 
+    border: none; 
+    cursor: pointer; 
+    border-radius: 4px;
 }}
 </style>
 </head>

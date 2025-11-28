@@ -235,3 +235,24 @@ def add_temp_checkin(student_id, classroom_id, seat_number):
     conn.commit()
     conn.close()
     return True
+
+
+def delete_checkin_record(course, save_time, classroom_id):
+    """删除指定签到记录"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            DELETE FROM checkin 
+            WHERE course = ? 
+            AND save_time = ? 
+            AND classroom_id = ?
+        """, (course, save_time, classroom_id))
+        count = cursor.rowcount
+        conn.commit()
+        return count > 0
+    except Exception as e:
+        print(f"Error deleting record: {e}")
+        return False
+    finally:
+        conn.close()
