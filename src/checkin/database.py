@@ -1,5 +1,4 @@
 import sqlite3
-import datetime
 
 DATABASE_PATH = "checkin.db"
 
@@ -31,7 +30,7 @@ def init_database():
             student_id TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT '正常',
             save_time TEXT NOT NULL,
-            class TEXT NOT NULL,
+            class_name TEXT NOT NULL,
             name TEXT NOT NULL,
             course TEXT,
             classroom_id TEXT NOT NULL,  
@@ -44,7 +43,7 @@ def init_database():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             student_id TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT '正常',
-            class TEXT NOT NULL,
+            class_name TEXT NOT NULL,
             name TEXT NOT NULL,
             seat_number INTEGER,
             classroom_id TEXT NOT NULL,
@@ -110,10 +109,10 @@ def get_class_student_counts():
     """)
     rows = cursor.fetchall()
     conn.close()
-    return [{"class_name": r[0], "count": r[1]} for r in rows]
+    return [{"class": r[0], "count": r[1]} for r in rows]
 
 
-def delete_students_by_class(class_name):
+def delete_students_by_class_name(class_name):
     """删除指定班级的所有学生"""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
@@ -146,7 +145,7 @@ def save_checkin_records(classroom_id, course_name):
         # 2. 插入到 checkin 表（主记录表）- 添加 classroom_id 字段
         cursor.executemany("""
             INSERT INTO checkin 
-            (student_id, status, save_time, class, name, course, classroom_id) 
+            (student_id, status, save_time, class_name, name, course, classroom_id) 
             VALUES (?, ?, datetime('now', 'localtime'), ?, ?, ?, ?)
         """, [
             (row[0], "正常", row[1].split('-')[0] if '-' in row[1] else "未知班级", 
@@ -228,7 +227,7 @@ def add_temp_checkin(student_id, classroom_id, seat_number):
     # 插入临时签到记录
     cursor.execute('''
         INSERT OR REPLACE INTO "checkin-temp" 
-        (student_id, status, class, name, seat_number, classroom_id) 
+        (student_id, status, class_name, name, seat_number, classroom_id) 
         VALUES (?, ?, ?, ?, ?, ?)
     ''', (student_id, "正常", class_name, name, seat_number, classroom_id))
     
@@ -256,3 +255,52 @@ def delete_checkin_record(course, save_time, classroom_id):
         return False
     finally:
         conn.close()
+
+
+def get_students_by_classroom(classroom_id):
+    """获取指定教室的所有学生信息（包括学号、姓名和班级）"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    # 查询临时签到表中的学生信息
+    cursor.execute('''
+        SELECT student_id, name, class_name
+        FROM "checkin-temp"
+        WHERE classroom_id = ?
+    ''', (classroom_id,))
+    students = cursor.fetchall()
+    conn.close()
+    return students
+
+
+def get_students_by_class_name(class_name):
+    """获取指定班级的所有学生"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT student_id, name FROM students WHERE class_name = ?", (class_name,))
+    students = cursor.fetchall()
+    conn.close()
+    return students
+
+
+def get_class_name_by_classroom(classroom_id):
+    """获取教室对应的班级名称"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''SELECT DISTINCT class_name FROM "checkin-temp" WHERE classroom_id = ?''', (classroom_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else ""
+
+def get_temp_checkins_with_ids_by_classroom(classroom_id):
+    """获取指定教室的临时签到数据（包含学号）"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT student_id, name, seat_number 
+        FROM "checkin-temp" 
+        WHERE classroom_id = ? 
+        ORDER BY seat_number
+    """, (classroom_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [(row[0], row[1], row[2]) for row in rows]

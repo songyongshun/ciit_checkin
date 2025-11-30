@@ -2,7 +2,6 @@ LICENSE
 README.md
 pyproject.toml
 src/checkin/__init__.py
-src/checkin/admin.py
 src/checkin/checkin.html
 src/checkin/checkinhandler.py
 src/checkin/database.py

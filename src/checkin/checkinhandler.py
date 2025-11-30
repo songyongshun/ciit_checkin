@@ -5,14 +5,13 @@ import os
 import re
 import urllib.parse
 import subprocess
-from . import admin
 from .database import (
     get_all_classrooms,
     add_classroom,
     delete_classroom,
     get_classroom_by_id,
     get_class_student_counts,
-    delete_students_by_class,
+    delete_students_by_class_name,
     DATABASE_PATH,
 )
 import qrcode
@@ -149,6 +148,10 @@ class CheckinHandler(BaseHTTPRequestHandler):
   </form>
 
   {control_buttons}
+  <!-- 添加新按钮 -->
+  <form method="GET" action="/checkin/{classroom_id}/view-by-student">
+    <button type="submit" class="btn btn-view">按学号查看签到情况</button>
+  </form>
   <form method="POST" action="/checkin/{classroom_id}/reset" onsubmit="return confirm('确定要重置所有数据吗？此操作不可恢复！');">
     <input type="hidden" name="action" value="reset">
     <button type="submit" class="btn btn-reset">重置</button>
@@ -340,6 +343,41 @@ class CheckinHandler(BaseHTTPRequestHandler):
             print(f"Error compiling LaTeX: {e}")
             return None
 
+    def _build_table_html(self, classroom_id):
+        """基于内存配置构建表格"""
+        classroom_id, row, col = self._get_room_config(classroom_id)  # ✅ 接收 id
+        if not classroom_id:
+            return "<h2>配置错误</h2>"
+        
+        row = row or 4
+        col = col or 12
+        
+        # 从 checkin-temp 表读取签到数据
+        from .database import get_temp_checkins_by_classroom
+        temp_checkins = get_temp_checkins_by_classroom(classroom_id)
+        
+        # 构建表格
+        table = [["" for _ in range(col)] for _ in range(row)]
+        for name, seat_number in temp_checkins:
+            try:
+                idx = seat_number - 1
+                r = idx // col
+                c = idx % col
+                if 0 <= r < row and 0 <= c < col:
+                    table[r][c] = name
+            except (ValueError, IndexError):
+                continue
+
+        # 生成HTML (倒序显示行)
+        table_html = "<table border='1' style='width:100%; border-collapse: collapse;'>\n"
+        for tr in reversed(table):  # 倒序显示
+            table_html += "  <tr>\n"
+            for cell in tr:
+                table_html += f"    <td>{cell}</td>\n"
+            table_html += "  </tr>\n"
+        table_html += "</table>"
+        return table_html
+    
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
 
@@ -445,8 +483,8 @@ class CheckinHandler(BaseHTTPRequestHandler):
                 for cls in classes:
                     html += f'''
                     <div class="class-item">
-                        <span><strong>{cls["class_name"]}</strong> ({cls["count"]} 名学生)</span>
-                        <button class="delete-btn" onclick="parent.deleteClass('{cls["class_name"]}')">删除班级</button>
+                        <span><strong>{cls["class"]}</strong> ({cls["count"]} 名学生)</span>
+                        <button class="delete-btn" onclick="parent.deleteClass('{cls["class"]}')">删除班级</button>
                     </div>
                     '''
             html += '</div>'
@@ -489,45 +527,70 @@ class CheckinHandler(BaseHTTPRequestHandler):
             self.wfile.write(html.encode('utf-8'))
             return
 
+        # 新增：按学号查看签到情况
+        student_view_match = re.match(r'^/checkin/(\d{3,4})/view-by-student$', path)
+        if student_view_match:
+            classroom_id = student_view_match.group(1)
+            
+            # 获取该教室对应的班级名称
+            from .database import get_class_name_by_classroom
+            class_name = get_class_name_by_classroom(classroom_id)
+            
+            from .database import get_students_by_class_name, get_temp_checkins_with_ids_by_classroom
+            all_students = get_students_by_class_name(class_name)
+
+            # 获取该教室的临时签到数据（包含学号）
+            temp_checkins = get_temp_checkins_with_ids_by_classroom(classroom_id)
+            
+            # 创建签到状态字典（使用学号作为键）
+            checkin_status = {student_id: "未签" for student_id, _ in all_students}
+            for student_id, _, _ in temp_checkins:  # 现在包含学号
+                if student_id in checkin_status:
+                    checkin_status[student_id] = "已签"
+            
+            # 生成HTML表格
+            table_html = "<table border='1' style='width:100%; border-collapse: collapse;'>"
+            table_html += "<tr><th>学号</th><th>姓名</th><th>签到状态</th></tr>"
+            
+            for student_id, name in all_students:
+                status = checkin_status.get(student_id, "未签")
+                table_html += f"<tr><td>{student_id}</td><td>{name}</td><td>{status}</td></tr>"
+            
+            table_html += "</table>"
+            
+            # 生成完整页面
+            html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>按学号查看签到情况</title>
+  <style>
+    body {{ font-family: sans-serif; padding: 20px; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+    th, td {{ padding: 10px; text-align: left; border: 1px solid #ddd; }}
+    th {{ background-color: #f2f2f2; }}
+    .btn {{ display: inline-block; margin-top: 20px; padding: 10px 20px; 
+           background-color: #4CAF50; color: white; text-decoration: none; border-radius: 4px; }}
+    .btn:hover {{ background-color: #45a049; }}
+  </style>
+</head>
+<body>
+  <h2>教室 {classroom_id} 学生签到情况</h2>
+  {table_html}
+  <a href="/checkin/{classroom_id}/admin.html" class="btn">返回管理页面</a>
+</body>
+</html>"""
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html.encode('utf-8'))
+            return
+
         self.send_response(404)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
         self.wfile.write("<h2>无效路径，请通过 /checkin/{教室ID}/admin.html 访问</h2>".encode('utf-8'))
-
-    def _build_table_html(self, classroom_id):
-        """基于内存配置构建表格"""
-        classroom_id, row, col = self._get_room_config(classroom_id)  # ✅ 接收 id
-        if not classroom_id:
-            return "<h2>配置错误</h2>"
-        
-        row = row or 4
-        col = col or 12
-        
-        # 从 checkin-temp 表读取签到数据
-        from .database import get_temp_checkins_by_classroom
-        temp_checkins = get_temp_checkins_by_classroom(classroom_id)
-        
-        # 构建表格
-        table = [["" for _ in range(col)] for _ in range(row)]
-        for name, seat_number in temp_checkins:
-            try:
-                idx = seat_number - 1
-                r = idx // col
-                c = idx % col
-                if 0 <= r < row and 0 <= c < col:
-                    table[r][c] = name
-            except (ValueError, IndexError):
-                continue
-
-        # 生成HTML (倒序显示行)
-        table_html = "<table border='1' style='width:100%; border-collapse: collapse;'>\n"
-        for tr in reversed(table):  # 倒序显示
-            table_html += "  <tr>\n"
-            for cell in tr:
-                table_html += f"    <td>{cell}</td>\n"
-            table_html += "  </tr>\n"
-        table_html += "</table>"
-        return table_html
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
@@ -1009,7 +1072,7 @@ body {{
                 self._send_import_result("班级名称不能为空", success=False)
                 return
 
-            deleted_count = delete_students_by_class(class_name)
+            deleted_count = delete_students_by_class_name(class_name)
             
             if deleted_count > 0:
                 message = f"成功删除班级 '{class_name}' 中的 {deleted_count} 名学生"
