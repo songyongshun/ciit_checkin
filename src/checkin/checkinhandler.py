@@ -533,32 +533,64 @@ class CheckinHandler(BaseHTTPRequestHandler):
             classroom_id = student_view_match.group(1)
             
             # 获取该教室对应的班级名称
-            from .database import get_class_name_by_classroom
+            from .database import get_class_name_by_classroom, get_students_by_class_name, get_temp_checkins_with_ids_by_classroom, get_classroom_by_id
             class_name = get_class_name_by_classroom(classroom_id)
-            
-            from .database import get_students_by_class_name, get_temp_checkins_with_ids_by_classroom
             all_students = get_students_by_class_name(class_name)
 
-            # 获取该教室的临时签到数据（包含学号）
+            # 获取教室配置以确定最大座位数
+            classroom_config = get_classroom_by_id(classroom_id)
+            if classroom_config:
+                _, row, col = classroom_config
+                max_seats = min(row * col, 48)
+            else:
+                max_seats = 48
+            
+            # 获取该教室的临时签到数据（包含学号和状态）
             temp_checkins = get_temp_checkins_with_ids_by_classroom(classroom_id)
             
-            # 创建签到状态字典（使用学号作为键）
-            checkin_status = {student_id: "未签" for student_id, _ in all_students}
-            for student_id, _, _ in temp_checkins:  # 现在包含学号
+            # 创建签到状态字典和座位号字典（使用学号作为键），默认状态改为"缺勤"
+            checkin_status = {student_id: "缺勤" for student_id, _ in all_students}
+            seat_numbers = {student_id: "-" for student_id, _ in all_students}  # 默认座位号为"-"
+            for student_id, _, seat_num, status in temp_checkins:  # 现在包含座位号
                 if student_id in checkin_status:
-                    checkin_status[student_id] = "已签"
+                    checkin_status[student_id] = status
+                    # 只有"已签"状态才显示实际座位号，其他状态显示"-"
+                    if status == "已签" and seat_num:
+                        seat_numbers[student_id] = str(seat_num)
+                    else:
+                        seat_numbers[student_id] = "-"
             
-            # 生成HTML表格
+            # 生成HTML表格（无JavaScript）
             table_html = "<table border='1' style='width:100%; border-collapse: collapse;'>"
-            table_html += "<tr><th>学号</th><th>姓名</th><th>签到状态</th></tr>"
-            
+            table_html += "<tr><th>学号</th><th>姓名</th><th>签到状态</th><th>座位号</th></tr>"  # 删除了 <th>操作</th>
+        
             for student_id, name in all_students:
-                status = checkin_status.get(student_id, "未签")
-                table_html += f"<tr><td>{student_id}</td><td>{name}</td><td>{status}</td></tr>"
-            
+                status = checkin_status.get(student_id, "缺勤")
+                seat_num = seat_numbers.get(student_id, "-")
+                table_html += f"""
+            <tr>
+                <td>{student_id}</td>
+                <td>{name}</td>
+                <td>
+                    <select name="status_{student_id}">
+                        <option value="已签"{" selected" if status == "已签" else ""}>已签</option>
+                        <option value="缺勤"{" selected" if status == "缺勤" else ""}>缺勤</option>
+                        <option value="病假"{" selected" if status == "病假" else ""}>病假</option>
+                        <option value="事假"{" selected" if status == "事假" else ""}>事假</option>
+                        <option value="公假"{" selected" if status == "公假" else ""}>公假</option>
+                        <option value="迟到"{" selected" if status == "迟到" else ""}>迟到</option>
+                        <option value="早退"{" selected" if status == "早退" else ""}>早退</option>
+                    </select>
+                </td>
+                <td>
+                    <input type="text" name="seat_{student_id}" value="{seat_num}" style="width:60px;">
+                </td>
+                <!-- 删除了操作列 <td>...</td> -->
+            </tr>"""
+        
             table_html += "</table>"
-            
-            # 生成完整页面
+        
+            # 生成完整页面（无JavaScript）
             html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -572,11 +604,22 @@ class CheckinHandler(BaseHTTPRequestHandler):
     .btn {{ display: inline-block; margin-top: 20px; padding: 10px 20px; 
            background-color: #4CAF50; color: white; text-decoration: none; border-radius: 4px; }}
     .btn:hover {{ background-color: #45a049; }}
+    .save-btn {{ background-color: #2196F3; }}
+    .save-btn:hover {{ background-color: #0b7dda; }}
+    input[type="text"] {{
+        width: 60px;
+        padding: 5px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+    }}
   </style>
 </head>
 <body>
   <h2>教室 {classroom_id} 学生签到情况</h2>
-  {table_html}
+  <form method="POST" action="/checkin/{classroom_id}/update-student-status">
+    {table_html}
+    <button type="submit" class="btn save-btn">保存更改</button>
+  </form>
   <a href="/checkin/{classroom_id}/admin.html" class="btn">返回管理页面</a>
 </body>
 </html>"""
@@ -753,7 +796,14 @@ body {{
                 <tr>
                     <td>{record['course']}</td>
                     <td>{record['classroom_id']}</td>
-                    <td>{record['count']}</td>
+                    <td>{record['class_total']}</td>
+                    <td>{record['signed']}</td>
+                    <td>{record['personal_leave']}</td>
+                    <td>{record['sick_leave']}</td>
+                    <td>{record['official_leave']}</td>
+                    <td>{record['absent']}</td>
+                    <td>{record['late']}</td>
+                    <td>{record['early_leave']}</td>
                     <td>{record['save_time']}</td>
                     <td>
                         <form method="POST" action="/checkin/delete-record" style="display:inline;">
@@ -769,7 +819,14 @@ body {{
                 <tr>
                     <th>课程名称</th>
                     <th>教室ID</th>
-                    <th>签到人数</th>
+                    <th>班级人数</th>
+                    <th>已签</th>
+                    <th>事假</th>
+                    <th>病假</th>
+                    <th>公假</th>
+                    <th>缺勤</th>
+                    <th>迟到</th>
+                    <th>早退</th>
                     <th>保存时间</th>
                     <th>操作</th>
                 </tr>
@@ -1082,6 +1139,96 @@ body {{
             self._send_import_result(message)
             return
 
+        # 新增：更新学生签到状态
+        update_status_match = re.match(r'^/checkin/(\d{3,4})/update-student-status$', path)
+        if update_status_match:
+            classroom_id = update_status_match.group(1)
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            params = urllib.parse.parse_qs(body)
+            
+            # 获取该教室对应的班级名称
+            from .database import get_class_name_by_classroom, get_students_by_class_name, clear_temp_checkins, add_temp_checkin, get_classroom_by_id
+            class_name = get_class_name_by_classroom(classroom_id)
+            all_students = get_students_by_class_name(class_name)
+
+            # 获取教室配置以确定最大座位数
+            classroom_config = get_classroom_by_id(classroom_id)
+            if classroom_config:
+                _, row, col = classroom_config
+                max_seats = min(row * col, 48)
+            else:
+                max_seats = 48
+            
+            # 验证所有输入
+            validation_errors = []
+            for student_id, name in all_students:
+                status_key = f"status_{student_id}"
+                seat_key = f"seat_{student_id}"
+                
+                status_value = params.get(status_key, ["缺勤"])[0]
+                seat_input = params.get(seat_key, ["-"])[0].strip()
+                
+                if status_value == "已签":
+                    if seat_input == "" or seat_input == "-":
+                        validation_errors.append(f"学号 {student_id}（{name}）：座位号不能为空")
+                    else:
+                        try:
+                            seat_num_val = int(seat_input)
+                            if seat_num_val < 1 or seat_num_val > max_seats:
+                                validation_errors.append(f"学号 {student_id}（{name}）：座位号 {seat_num_val} 超出范围（1-{max_seats}）")
+                        except ValueError:
+                            validation_errors.append(f"学号 {student_id}（{name}）：座位号 '{seat_input}' 不是有效数字")
+            
+            if validation_errors:
+                # 返回错误页面
+                error_html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>输入错误</title>
+<style>
+body {{ font-family: sans-serif; padding: 20px; color: #d32f2f; }}
+ul {{ margin-top: 10px; }}
+.btn {{ display: inline-block; margin-top: 20px; padding: 10px 20px; 
+       background-color: #4CAF50; color: white; text-decoration: none; border-radius: 4px; }}
+</style>
+</head>
+<body>
+<h2>保存失败：发现以下错误</h2>
+<ul>{''.join(f'<li>{err}</li>' for err in validation_errors)}</ul>
+<a href="/checkin/{classroom_id}/view-by-student" class="btn">返回修改</a>
+</body></html>"""
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(error_html.encode('utf-8'))
+                return
+            
+            # 清空当前教室的所有临时签到记录
+            clear_temp_checkins(classroom_id)
+            
+            # 重新添加所有学生记录
+            updated_count = 0
+            for student_id, name in all_students:
+                status_value = params.get(f"status_{student_id}", ["缺勤"])[0]
+                seat_input = params.get(f"seat_{student_id}", ["-"])[0].strip()
+                
+                seat_num = None
+                if status_value == "已签":
+                    seat_num = int(seat_input)  # 已通过验证
+                
+                if add_temp_checkin(student_id, classroom_id, seat_num, status_value):
+                    updated_count += 1
+            
+            redirect_url = f"/checkin/{classroom_id}/view-by-student"
+            html_resp = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>更新成功</title>
+<meta http-equiv="refresh" content="2;url={redirect_url}"></head>
+<body><p>已更新 {updated_count} 名学生的签到状态，2秒后返回...</p></body></html>"""
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html_resp.encode('utf-8'))
+            return
+
         # ✅ 匹配 /checkin/{id}/save 和 /checkin/{id}/reset
         save_match = re.match(r'^/checkin/(\d{3,4})/save$', path)
         reset_match = re.match(r'^/checkin/(\d{3,4})/reset$', path)
@@ -1206,7 +1353,7 @@ body {{
                     name = row[0]
                     # 保存到 checkin-temp 表
                     from .database import add_temp_checkin
-                    if add_temp_checkin(student_id, classroom_id, seq):
+                    if add_temp_checkin(student_id, classroom_id, seq, "已签"):  # 显式设置状态为"已签"
                         message = f"签到成功：{name}"
                         status = 200
                     else:
