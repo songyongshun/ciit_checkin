@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: ciit-checkin
-Version: 0.1.11
+Version: 0.1.12
 Summary: 简易签到系统：提供基于 HTTP 的签到表单、管理页面与导出 CSV 功能，适合教室点名与记录。
 Author-email: Yongshun Song <ys_song@foxmail.com>
 Maintainer-email: Yongshun Song <ys_song@foxmail.com>

@@ -5,6 +5,7 @@ import os
 import re
 import urllib.parse
 import subprocess
+import datetime
 from .database import (
     get_all_classrooms,
     add_classroom,
@@ -813,6 +814,14 @@ body {{
                             <button type="submit" class="btn-delete">删除记录</button>
                         </form>
                     </td>
+                    <td>
+                        <form method="POST" action="/checkin/export-record" style="display:inline;">
+                            <input type="hidden" name="course" value="{record['course']}">
+                            <input type="hidden" name="save_time" value="{record['save_time']}">
+                            <input type="hidden" name="classroom_id" value="{record['classroom_id']}">
+                            <button type="submit" class="btn-export">导出到xlsx文件</button>
+                        </form>
+                    </td>
                 </tr>"""
                 table_html = f"""
             <table class="record-table">
@@ -1302,89 +1311,201 @@ ul {{ margin-top: 10px; }}
             self.wfile.write(html_resp.encode('utf-8'))
             return
 
-        # Handle check-in POST: /checkin/{id}/checkin-XX.html
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length) if content_length > 0 else b''
-        content_type = self.headers.get('Content-Type', '')
+        # 仅在路径为 /checkin/{id}/checkin-XX.html 时处理学生扫码签到请求，
+        # 否则保留给其它 POST 分支（比如导出记录）处理。
+        checkin_post_match = re.match(r'^/checkin/(\d{3,4})/checkin-(\d{2})\.html$', path)
+        if checkin_post_match:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length) if content_length > 0 else b''
+            content_type = self.headers.get('Content-Type', '')
 
-        student_id = None
-        if 'application/json' in content_type:
-            try:
-                data = json.loads(body.decode('utf-8'))
-                student_id = data.get('student_id') or data.get('user_id')
-            except json.JSONDecodeError:
-                student_id = None
-        else:
-            try:
-                parsed = urllib.parse.parse_qs(body.decode('utf-8'))
-                student_id = parsed.get('student_id', [None])[0]
-            except Exception:
-                student_id = None
-
-        if student_id:
-            # 提取 classroom_id 和 seq
-            class_match = re.match(r'^/checkin/(\d{3,4})/checkin-(\d{2})\.html$', path)
-            if not class_match:
-                self.send_response(400)
-                self.send_header('Content-Type', 'text/html; charset=utf-8')
-                self.end_headers()
-                self.wfile.write("<h2>签到请求路径无效，请通过二维码访问</h2>".encode('utf-8'))
-                return
-
-            classroom_id = class_match.group(1)
-            seq = int(class_match.group(2))
-
-            # 检查是否允许签到
-            if not CheckinHandler.checkin_enabled.get(classroom_id, False):
-                message = "签到未开始或已结束"
-                status = 403
+            student_id = None
+            if 'application/json' in content_type:
+                try:
+                    data = json.loads(body.decode('utf-8'))
+                    student_id = data.get('student_id') or data.get('user_id')
+                except json.JSONDecodeError:
+                    student_id = None
             else:
-                # 查询数据库获取姓名
-                conn = sqlite3.connect(DATABASE_PATH)
-                cursor = conn.cursor()
-                cursor.execute("SELECT name FROM students WHERE student_id = ?", (student_id,))
-                row = cursor.fetchone()
-                conn.close()
+                try:
+                    parsed = urllib.parse.parse_qs(body.decode('utf-8'))
+                    student_id = parsed.get('student_id', [None])[0]
+                except Exception:
+                    student_id = None
 
-                if not row:
-                    message = "学号未找到，请确认是否已导入名单"
-                    status = 400
+            if student_id:
+                classroom_id = checkin_post_match.group(1)
+                seq = int(checkin_post_match.group(2))
+
+                # 检查是否允许签到
+                if not CheckinHandler.checkin_enabled.get(classroom_id, False):
+                    message = "签到未开始或已结束"
+                    status = 403
                 else:
-                    name = row[0]
-                    # 保存到 checkin-temp 表
-                    from .database import add_temp_checkin
-                    if add_temp_checkin(student_id, classroom_id, seq, "已签"):  # 显式设置状态为"已签"
-                        message = f"签到成功：{name}"
-                        status = 200
+                    # 查询数据库获取姓名
+                    conn = sqlite3.connect(DATABASE_PATH)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT name FROM students WHERE student_id = ?", (student_id,))
+                    row = cursor.fetchone()
+                    conn.close()
+
+                    if not row:
+                        message = "学号未找到，请确认是否已导入名单"
+                        status = 400
                     else:
-                        message = "签到失败"
-                        status = 500
-        else:
-            message = "缺少学号"
-            status = 400
+                        name = row[0]
+                        from .database import add_temp_checkin
+                        if add_temp_checkin(student_id, classroom_id, seq, "已签"):
+                            message = f"签到成功：{name}"
+                            status = 200
+                        else:
+                            message = "签到失败"
+                            status = 500
+            else:
+                message = "缺少学号"
+                status = 400
 
-        self.send_response(status)
-        self.send_header('Content-Type', 'text/html; charset=utf-8')
-        self.end_headers()
-        self.wfile.write(self._render_form(message=message))
-
-        # ✅ 重置操作
-        reset_match = re.match(r'^/checkin/(\d{3,4})/reset$', path)
-        if reset_match:
-            classroom_id = reset_match.group(1)
-            # 清空 checkin-temp 表中的数据
-            from .database import clear_temp_checkins
-            clear_temp_checkins(classroom_id)
-            
-            redirect_url = f"/checkin/{classroom_id}/admin.html"
-            html_resp = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>重置成功</title>
-<meta http-equiv="refresh" content="1;url={redirect_url}"></head>
-<body><p>数据已重置，1秒后返回...</p></body></html>"""
-            self.send_response(200)
+            self.send_response(status)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html_resp.encode('utf-8'))
+            self.wfile.write(self._render_form(message=message))
+            return
+        
+
+        if path == "/checkin/export-record":
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            params = urllib.parse.parse_qs(body)
+            course = params.get("course", [""])[0] or ""
+            save_time = params.get("save_time", [""])[0] or ""
+            classroom_id = params.get("classroom_id", [""])[0] or ""
+
+            # 尝试通过 helper 获取记录，否则回退到直接查询
+            rows = None
+            try:
+                from .database import get_checkin_records_by_save_time
+                rows = get_checkin_records_by_save_time(course, save_time, classroom_id)
+            except Exception:
+                try:
+                    conn = sqlite3.connect(DATABASE_PATH)
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT student_id, name, status FROM checkin_records WHERE course=? AND save_time=? AND classroom_id=?",
+                        (course, save_time, classroom_id)
+                    )
+                    fetched = cur.fetchall()
+                    conn.close()
+                    # 规范成 list[dict]
+                    rows = [{"student_id": r[0], "name": r[1], "status": r[2]} for r in fetched]
+                except Exception as e:
+                    self._send_import_result(f"查询记录失败: {e}", success=False)
+                    return
+
+            if not rows:
+                self._send_import_result("未找到符合条件的签到记录", success=False)
+                return
+
+            # 准备生成 xlsx
+            try:
+                from io import BytesIO
+                import openpyxl
+            except ImportError:
+                self._send_import_result("服务器缺少 openpyxl 库，请 pip install openpyxl", success=False)
+                return
+            except Exception as e:
+                self._send_import_result(f"无法初始化导出模块: {e}", success=False)
+                return
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            # 确保 ws 不为 None；如果为 None 或者设置 title 失败，则创建新 sheet
+            if ws is None:
+                ws = wb.create_sheet(title="签到明细")
+            else:
+                try:
+                    ws.title = "签到明细"
+                except Exception:
+                    ws = wb.create_sheet(title="签到明细")
+            # 移除多余的空默认 sheet（可选），保留名为 "签到明细" 的表
+            try:
+                if len(wb.sheetnames) > 1:
+                    for name in list(wb.sheetnames):
+                        if name != "签到明细":
+                            sh = wb[name]
+                            if sh.max_row == 1 and sh.max_column == 1 and sh.cell(1, 1).value is None:
+                                wb.remove(sh)
+            except Exception:
+                # 如果移除失败也不影响后续导出
+                pass
+            # 小工具：从各种字符串中提取并标准化为 yyyy-mm-dd
+            def _extract_date(val, fallback=""):
+                if not val:
+                    return fallback
+                s = str(val)
+                m = re.search(r'(\d{4}-\d{2}-\d{2})', s)
+                if m:
+                    return m.group(1)
+                m = re.search(r'(\d{4}/\d{2}/\d{2})', s)
+                if m:
+                    return m.group(1).replace('/', '-')
+                m = re.search(r'(\d{8})', s)
+                if m:
+                    g = m.group(1)
+                    return f"{g[0:4]}-{g[4:6]}-{g[6:8]}"
+                return fallback
+
+            # 第三列标题为指定的日期（yyyy-mm-dd），优先使用请求中的 save_time，否则使用今天
+            header_date = _extract_date(save_time, "")
+            if not header_date:
+                header_date = datetime.date.today().isoformat()
+            ws.append(["学号", "姓名", header_date])
+
+            # 列内容保留为签到状态（status）
+            for r in rows:
+                sid = name = status = ""
+                if isinstance(r, dict):
+                    sid = r.get("student_id") or r.get("id") or r.get("学号") or ""
+                    name = r.get("name") or r.get("姓名") or ""
+                    status = r.get("status") or r.get("state") or r.get("状态") or ""
+                else:
+                    vals = list(r)
+                    if len(vals) >= 1:
+                        sid = vals[0] or ""
+                    if len(vals) >= 2:
+                        name = vals[1] or ""
+                    if len(vals) >= 3:
+                        status = vals[2] or ""
+                ws.append([sid, name, status])
+ 
+            bio = BytesIO()
+            wb.save(bio)
+            bio.seek(0)
+ 
+             # 构造安全的文件名（移除潜在危险字符并限制长度）
+            def _safe_name(s: str, maxlen=60):
+                s = str(s or "")
+                s = re.sub(r'[\\/:*?"<>|]+', "_", s)
+                s = re.sub(r'\s+', "_", s)
+                return s[:maxlen]
+ 
+            safe_course = _safe_name(course)
+            safe_time = _safe_name(save_time)
+            safe_class = _safe_name(classroom_id)
+            raw_fname = f"checkin_{safe_class}_{safe_course}_{safe_time}.xlsx"
+            # 为 Content-Disposition 做 URL 引用，确保中文也可用
+            quoted = urllib.parse.quote(raw_fname)
+ 
+            # 构造仅包含 ASCII 的 header 值以避免 latin-1 编码错误：
+            # 用不可打印/非 ASCII 字符替换为下划线作为 filename 回退，
+            # 同时保留 RFC5987 的 filename*（使用 percent-encoding 的 UTF-8）。
+            ascii_fname = re.sub(r'[^\x20-\x7E]', '_', raw_fname) or "download.xlsx"
+            disposition = f'attachment; filename="{ascii_fname}"; filename*=UTF-8\'\'{quoted}'
+ 
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            self.send_header('Content-Disposition', disposition)
+            self.end_headers()
+            self.wfile.write(bio.read())
             return
 
     def _send_import_result(self, message, success=True):
@@ -1401,3 +1522,4 @@ ul {{ margin-top: 10px; }}
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
         self.wfile.write(html.encode('utf-8'))
+

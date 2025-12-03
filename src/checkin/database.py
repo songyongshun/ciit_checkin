@@ -343,3 +343,39 @@ def get_temp_checkins_with_ids_by_classroom(classroom_id):
     rows = cursor.fetchall()
     conn.close()
     return [(row[0], row[1], row[2], row[3]) for row in rows]
+
+
+def get_checkin_records_by_save_time(course, save_time, classroom_id):
+    """返回指定 course + save_time + classroom_id 的签到明细，格式为 list[dict]
+    dict 包含: student_id, name, status, seat (seat 可能为 None)
+    """
+    if not course or not save_time or not classroom_id:
+        return []
+
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        # 试图查询 seat_number 字段（如果存在），否则返回 NULL 作为 seat
+        # 检查表结构中是否存在 seat_number 列
+        cursor.execute("PRAGMA table_info(checkin)")
+        cols = [c[1] for c in cursor.fetchall()]
+        if "seat_number" in cols:
+            cursor.execute(
+                "SELECT student_id, name, status, seat_number FROM checkin WHERE course=? AND save_time=? AND classroom_id=? ORDER BY name",
+                (course, save_time, classroom_id)
+            )
+        else:
+            cursor.execute(
+                "SELECT student_id, name, status, NULL as seat_number FROM checkin WHERE course=? AND save_time=? AND classroom_id=? ORDER BY name",
+                (course, save_time, classroom_id)
+            )
+        fetched = cursor.fetchall()
+        results = [
+            {"student_id": r[0], "name": r[1], "status": r[2], "seat": r[3]}
+            for r in fetched
+        ]
+        return results
+    except Exception:
+        return []
+    finally:
+        conn.close()
