@@ -791,10 +791,14 @@ body {{
             
             # 生成记录表格
             if records:
+                # 使用复选框选择多条记录并由同一按钮导出
                 table_rows = ""
                 for record in records:
+                    # 复选框的值编码为 course||save_time||classroom_id
+                    cbval = f"{record['course']}||{record['save_time']}||{record['classroom_id']}"
                     table_rows += f"""
                 <tr>
+                    <td><input type="checkbox" name="export_record" value="{cbval}"></td>
                     <td>{record['course']}</td>
                     <td>{record['classroom_id']}</td>
                     <td>{record['class_total']}</td>
@@ -814,18 +818,13 @@ body {{
                             <button type="submit" class="btn-delete">删除记录</button>
                         </form>
                     </td>
-                    <td>
-                        <form method="POST" action="/checkin/export-record" style="display:inline;">
-                            <input type="hidden" name="course" value="{record['course']}">
-                            <input type="hidden" name="save_time" value="{record['save_time']}">
-                            <input type="hidden" name="classroom_id" value="{record['classroom_id']}">
-                            <button type="submit" class="btn-export">导出到xlsx文件</button>
-                        </form>
-                    </td>
                 </tr>"""
+                # 表格被包裹在一个表单内，表单提交时会发送所有被选中的 export_record 值
                 table_html = f"""
+            <form method="POST" action="/checkin/export-record">
             <table class="record-table">
                 <tr>
+                    <th>选择</th>
                     <th>课程名称</th>
                     <th>教室ID</th>
                     <th>班级人数</th>
@@ -840,10 +839,14 @@ body {{
                     <th>操作</th>
                 </tr>
                 {table_rows}
-            </table>"""
+            </table>
+            <div style="margin-top:12px;">
+                <button type="submit" class="btn-export">导出到xlsx文件</button>
+            </div>
+            </form>"""
             else:
                 table_html = "<p>未找到相关签到记录</p>"
-            
+ 
             html_resp = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>签到记录</title>
 <style>
@@ -1376,30 +1379,74 @@ ul {{ margin-top: 10px; }}
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length).decode('utf-8')
             params = urllib.parse.parse_qs(body)
-            course = params.get("course", [""])[0] or ""
-            save_time = params.get("save_time", [""])[0] or ""
-            classroom_id = params.get("classroom_id", [""])[0] or ""
 
-            # 尝试通过 helper 获取记录，否则回退到直接查询
-            rows = None
-            try:
-                from .database import get_checkin_records_by_save_time
-                rows = get_checkin_records_by_save_time(course, save_time, classroom_id)
-            except Exception:
+            # 支持批量导出：优先从表单的 export_record[] 获取多个选中项（格式为 course||save_time||classroom_id）
+            export_items = params.get("export_record", [])
+
+            rows = []
+            # ensure these exist for filename/header fallback
+            course = save_time = classroom_id = ""
+
+            # 如果用户未选中任何复选框，直接返回提示页面，不做其它操作
+            if not export_items:
+                html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>未选择记录</title></head>
+<body style="font-family: sans-serif; padding:20px;">
+  <h2>没有选择任何签到记录</h2>
+  <p>请返回并选择至少一条签到记录后再导出。</p>
+</body></html>"""
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(html.encode('utf-8'))
+                return
+            
+            if export_items:
+                # 使用第一个选中项作为导出文件命名与表头日期的来源
+                first_meta = None
                 try:
-                    conn = sqlite3.connect(DATABASE_PATH)
-                    cur = conn.cursor()
-                    cur.execute(
-                        "SELECT student_id, name, status FROM checkin_records WHERE course=? AND save_time=? AND classroom_id=?",
-                        (course, save_time, classroom_id)
-                    )
-                    fetched = cur.fetchall()
-                    conn.close()
-                    # 规范成 list[dict]
-                    rows = [{"student_id": r[0], "name": r[1], "status": r[2]} for r in fetched]
-                except Exception as e:
-                    self._send_import_result(f"查询记录失败: {e}", success=False)
-                    return
+                    from .database import get_checkin_records_by_save_time
+                except Exception:
+                    get_checkin_records_by_save_time = None
+
+                for item in export_items:
+                    try:
+                        c, st, cid = item.split("||", 2)
+                    except Exception:
+                        continue
+                    if first_meta is None:
+                        first_meta = (c, st, cid)
+                        course, save_time, classroom_id = c, st, cid
+
+                    # 首选 helper 查询
+                    recs = None
+                    if get_checkin_records_by_save_time:
+                        try:
+                            recs = get_checkin_records_by_save_time(c, st, cid)
+                        except Exception:
+                            recs = None
+
+                    # 回退到直连查询
+                    if recs is None:
+                        try:
+                            conn = sqlite3.connect(DATABASE_PATH)
+                            cur = conn.cursor()
+                            cur.execute(
+                                "SELECT student_id, name, status FROM checkin_records WHERE course=? AND save_time=? AND classroom_id=?",
+                                (c, st, cid)
+                            )
+                            fetched = cur.fetchall()
+                            conn.close()
+                            recs = [{"student_id": r[0], "name": r[1], "status": r[2]} for r in fetched]
+                        except Exception:
+                            recs = []
+
+                    for r in recs:
+                        if isinstance(r, dict):
+                            rows.append(r)
+                        else:
+                            rows.append({"student_id": r[0], "name": r[1], "status": r[2]})
+            # end of export_items handling, continue with rows aggregation...
 
             if not rows:
                 self._send_import_result("未找到符合条件的签到记录", success=False)
@@ -1437,6 +1484,7 @@ ul {{ margin-top: 10px; }}
             except Exception:
                 # 如果移除失败也不影响后续导出
                 pass
+
             # 小工具：从各种字符串中提取并标准化为 yyyy-mm-dd
             def _extract_date(val, fallback=""):
                 if not val:
@@ -1476,31 +1524,39 @@ ul {{ margin-top: 10px; }}
                     if len(vals) >= 3:
                         status = vals[2] or ""
                 ws.append([sid, name, status])
- 
+
             bio = BytesIO()
             wb.save(bio)
             bio.seek(0)
- 
-             # 构造安全的文件名（移除潜在危险字符并限制长度）
+
+            # 构造安全的文件名（移除潜在危险字符并限制长度）
             def _safe_name(s: str, maxlen=60):
                 s = str(s or "")
                 s = re.sub(r'[\\/:*?"<>|]+', "_", s)
                 s = re.sub(r'\s+', "_", s)
                 return s[:maxlen]
- 
-            safe_course = _safe_name(course)
-            safe_time = _safe_name(save_time)
-            safe_class = _safe_name(classroom_id)
+
+            # 当为批量导出时，若未提供明确 course/save_time/classroom_id，使用通用命名
+            if export_items:
+                now_tag = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                safe_course = "multiple"
+                safe_time = now_tag
+                safe_class = "multiple"
+            else:
+                safe_course = _safe_name(course)
+                safe_time = _safe_name(save_time)
+                safe_class = _safe_name(classroom_id)
+
             raw_fname = f"checkin_{safe_class}_{safe_course}_{safe_time}.xlsx"
             # 为 Content-Disposition 做 URL 引用，确保中文也可用
             quoted = urllib.parse.quote(raw_fname)
- 
+
             # 构造仅包含 ASCII 的 header 值以避免 latin-1 编码错误：
             # 用不可打印/非 ASCII 字符替换为下划线作为 filename 回退，
             # 同时保留 RFC5987 的 filename*（使用 percent-encoding 的 UTF-8）。
             ascii_fname = re.sub(r'[^\x20-\x7E]', '_', raw_fname) or "download.xlsx"
             disposition = f'attachment; filename="{ascii_fname}"; filename*=UTF-8\'\'{quoted}'
- 
+
             self.send_response(200)
             self.send_header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
             self.send_header('Content-Disposition', disposition)
