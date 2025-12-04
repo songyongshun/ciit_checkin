@@ -4,7 +4,6 @@ import json
 import os
 import re
 import urllib.parse
-import subprocess
 import datetime
 from .database import (
     get_all_classrooms,
@@ -13,11 +12,14 @@ from .database import (
     get_classroom_by_id,
     get_class_student_counts,
     delete_students_by_class_name,
-    DATABASE_PATH,
+    DATABASE_PATH
 )
-import qrcode
-from PIL import ImageDraw, ImageFont
 import sqlite3
+from .qrcode_utils import (
+    generate_qr_codes,
+    generate_latex_file,
+    compile_latex_to_pdf
+)
 
 class CheckinHandler(BaseHTTPRequestHandler):
     public_ip = "127.0.0.1"  # 将作为实例属性或通过 run_server 设置
@@ -215,134 +217,6 @@ class CheckinHandler(BaseHTTPRequestHandler):
             return result
         print(f"[DEBUG] Classroom {classroom_id} not found")
         return (None, None, None)
-
-    def _generate_qr_codes(self, classroom_id):
-        """生成指定教室的二维码"""
-        classroom_id, row, col = self._get_room_config(classroom_id)
-        if not classroom_id:
-            return False
-            
-        public_ip = CheckinHandler.public_ip
-        total_seats = min(row * col, 48)
-        
-        # 创建输出目录
-        output_dir = os.path.join("data", classroom_id, "qrcode")
-        os.makedirs(output_dir, exist_ok=True)
-        
-        base_url = f"http://{public_ip}/checkin/{classroom_id}/checkin-{{:02d}}.html"
-        
-        for num in range(1, total_seats + 1):
-            url = base_url.format(num)
-            qr = qrcode.QRCode(
-                version=1,
-                error_correction=qrcode.constants.ERROR_CORRECT_L,
-                box_size=10,
-                border=4,
-            )
-            qr.add_data(url)
-            qr.make(fit=True)
-            img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-            
-            draw = ImageDraw.Draw(img)
-            try:
-                font = ImageFont.truetype("arial.ttf", 20)
-            except IOError:
-                font = ImageFont.load_default()
-            
-            text = f"{num:02d}"
-            text_bbox = draw.textbbox((0, 0), text, font=font)
-            text_width = text_bbox[2] - text_bbox[0]
-            img_width, _ = img.size
-            position = ((img_width - text_width) // 2, 5)
-            draw.text(position, text, font=font, fill="black")
-            
-            filename = os.path.join(output_dir, f"qr-{num:02d}.png")
-            img.save(filename)
-            
-        return True
-
-    def _generate_latex_file(self, classroom_id):
-        """生成 LaTeX 文件用于打印二维码"""
-        classroom_id, row, col = self._get_room_config(classroom_id)
-        if not classroom_id:
-            return None
-            
-        total_seats = min(row * col, 48)
-        output_dir = os.path.join("data", classroom_id, "qrcode")
-        
-        # 检查二维码文件是否存在
-        for i in range(1, total_seats + 1):
-            qr_file = os.path.join(output_dir, f"qr-{i:02d}.png")
-            if not os.path.exists(qr_file):
-                return None
-        
-        # 生成 LaTeX 内容
-        latex_content = r"""\documentclass[a4paper,10pt]{article}
-\usepackage[margin=1cm]{geometry}
-\usepackage{graphicx}
-\usepackage{caption}
-\usepackage{subcaption}
-\usepackage{tikz}
-
-\setlength{\parindent}{0pt}
-\pagestyle{empty} 
-
-\begin{document}
-
-"""
-        
-        # 添加二维码包含命令
-        for i in range(1, total_seats + 1):
-            latex_content += f"  \\includegraphics[width=0.23\\textwidth]{{qr-{i:02d}.png}}%\n"
-            if i < total_seats:
-                remainder = (i - 1) % 4
-                if remainder == 3:
-                    latex_content += "  \\par\n"
-                else:
-                    latex_content += "  \\hfill\n"
-        
-        latex_content += r"\end{document}"
-        
-        # 保存 LaTeX 文件
-        tex_file = os.path.join(output_dir, f"qrcode-{classroom_id}.tex")
-        with open(tex_file, 'w', encoding='utf-8') as f:
-            f.write(latex_content)
-            
-        return tex_file
-
-    def _compile_latex_to_pdf(self, tex_file_path):
-        """调用 pdflatex 编译 LaTeX 文件为 PDF"""
-        try:
-            # 获取 LaTeX 文件所在目录
-            tex_dir = os.path.dirname(tex_file_path)
-            tex_filename = os.path.basename(tex_file_path)
-            
-            # 在 LaTeX 文件目录中执行 pdflatex
-            result = subprocess.run(
-                ['pdflatex', '-interaction=nonstopmode', tex_filename],
-                cwd=tex_dir,
-                capture_output=True,
-                text=True,
-                timeout=30  # 30秒超时
-            )
-            
-            if result.returncode == 0:
-                pdf_file = tex_file_path.replace('.tex', '.pdf')
-                if os.path.exists(pdf_file):
-                    return pdf_file
-            else:
-                print(f"pdflatex error: {result.stderr}")
-                return None
-                
-        except subprocess.TimeoutExpired:
-            print("pdflatex timeout")
-            return None
-        except FileNotFoundError:
-            print("pdflatex not found. Please install LaTeX distribution.")
-            return None
-        except Exception as e:
-            print(f"Error compiling LaTeX: {e}")
-            return None
 
     def _build_table_html(self, classroom_id):
         """基于内存配置构建表格"""
@@ -953,7 +827,7 @@ body {{
             
             classroom_id = params.get("classroom_id", [""])[0]
             
-            if self._generate_qr_codes(classroom_id):
+            if generate_qr_codes(self,classroom_id):
                 message = f"二维码已生成到 ./data/{classroom_id}/qrcode/ 目录"
                 # 添加下载按钮
                 download_button = f'<form method="POST" action="/checkin/manage/generate-print-file" style="margin-top: 15px;">' \
@@ -1000,10 +874,10 @@ body {{
             classroom_id = params.get("classroom_id", [""])[0]
             
             # 生成 LaTeX 文件
-            tex_file = self._generate_latex_file(classroom_id)
+            tex_file = generate_latex_file(self, classroom_id)
             if tex_file:
                 # 编译为 PDF
-                pdf_file = self._compile_latex_to_pdf(tex_file)
+                pdf_file = compile_latex_to_pdf(tex_file)
                 if pdf_file:
                     # 重定向到下载页面
                     download_url = f"/checkin/{classroom_id}/qrcode/qrcode-{classroom_id}.pdf"
@@ -1200,7 +1074,7 @@ body {{
 body {{ font-family: sans-serif; padding: 20px; color: #d32f2f; }}
 ul {{ margin-top: 10px; }}
 .btn {{ display: inline-block; margin-top: 20px; padding: 10px 20px; 
-       background-color: #4CAF50; color: white; text-decoration: none; border-radius: 4px; }}
+       background-color: #4CAF50; color: white; text-decoration: none, border-radius: 4px; }}
 </style>
 </head>
 <body>
@@ -1270,12 +1144,18 @@ ul {{ margin-top: 10px; }}
 
         if reset_match:
             classroom_id = reset_match.group(1)
-            admin.reset_namefile(classroom_id=classroom_id)
+            # 使用 database.clear_temp_checkins 清空该教室的临时签到数据
+            from .database import clear_temp_checkins
+            try:
+                deleted_count = clear_temp_checkins(classroom_id)
+            except Exception:
+                deleted_count = 0
+
             redirect_url = f"/checkin/{classroom_id}/admin.html"
             html_resp = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>重置成功</title>
 <meta http-equiv="refresh" content="1;url={redirect_url}"></head>
-<body><p>数据已重置，1秒后返回...</p></body></html>"""
+<body><p>已清除 {deleted_count} 条临时签到数据，1秒后返回...</p></body></html>"""
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
