@@ -12,7 +12,17 @@ from .database import (
     get_classroom_by_id,
     get_class_student_counts,
     delete_students_by_class_name,
-    DATABASE_PATH
+    DATABASE_PATH,
+    get_temp_checkins_by_classroom,
+    get_class_name_by_classroom,
+    get_students_by_class_name,
+    get_temp_checkins_with_ids_by_classroom,
+    delete_checkin_record,
+    get_checkin_summary_by_course,
+    clear_temp_checkins,
+    add_temp_checkin,
+    get_checkin_records_by_save_time,
+    save_checkin_records
 )
 import sqlite3
 from .qrcode_utils import (
@@ -228,7 +238,6 @@ class CheckinHandler(BaseHTTPRequestHandler):
         col = col or 12
         
         # 从 checkin-temp 表读取签到数据
-        from .database import get_temp_checkins_by_classroom
         temp_checkins = get_temp_checkins_by_classroom(classroom_id)
         
         # 构建表格
@@ -408,7 +417,6 @@ class CheckinHandler(BaseHTTPRequestHandler):
             classroom_id = student_view_match.group(1)
             
             # 获取该教室对应的班级名称
-            from .database import get_class_name_by_classroom, get_students_by_class_name, get_temp_checkins_with_ids_by_classroom, get_classroom_by_id
             class_name = get_class_name_by_classroom(classroom_id)
             all_students = get_students_by_class_name(class_name)
 
@@ -524,10 +532,8 @@ class CheckinHandler(BaseHTTPRequestHandler):
             classroom_id = params.get("classroom_id", [""])[0]
             
             # 调用数据库函数删除记录
-            from .database import delete_checkin_record
             if delete_checkin_record(course, save_time, classroom_id):
                 # 重新查询记录以刷新页面
-                from .database import get_checkin_summary_by_course
                 records = get_checkin_summary_by_course(course)
                 
                 # 重新渲染页面
@@ -660,7 +666,6 @@ body {{
                 return
             
             # 查询签到记录
-            from .database import get_checkin_summary_by_course
             records = get_checkin_summary_by_course(course_name)
             
             # 生成记录表格
@@ -1034,7 +1039,6 @@ body {{
             params = urllib.parse.parse_qs(body)
             
             # 获取该教室对应的班级名称
-            from .database import get_class_name_by_classroom, get_students_by_class_name, clear_temp_checkins, add_temp_checkin, get_classroom_by_id
             class_name = get_class_name_by_classroom(classroom_id)
             all_students = get_students_by_class_name(class_name)
 
@@ -1128,7 +1132,6 @@ ul {{ margin-top: 10px; }}
             course_name = params.get("course", [""])[0]
             
             # 保存到数据库
-            from .database import save_checkin_records
             count = save_checkin_records(classroom_id, course_name)
             
             redirect_url = f"/checkin/{classroom_id}/admin.html"
@@ -1145,7 +1148,6 @@ ul {{ margin-top: 10px; }}
         if reset_match:
             classroom_id = reset_match.group(1)
             # 使用 database.clear_temp_checkins 清空该教室的临时签到数据
-            from .database import clear_temp_checkins
             try:
                 deleted_count = clear_temp_checkins(classroom_id)
             except Exception:
@@ -1237,7 +1239,6 @@ ul {{ margin-top: 10px; }}
                         status = 400
                     else:
                         name = row[0]
-                        from .database import add_temp_checkin
                         if add_temp_checkin(student_id, classroom_id, seq, "已签"):
                             message = f"签到成功：{name}"
                             status = 200
@@ -1284,11 +1285,6 @@ ul {{ margin-top: 10px; }}
             if export_items:
                 # 使用第一个选中项作为导出文件命名与表头日期的来源
                 first_meta = None
-                try:
-                    from .database import get_checkin_records_by_save_time
-                except Exception:
-                    get_checkin_records_by_save_time = None
-
                 for item in export_items:
                     try:
                         c, st, cid = item.split("||", 2)

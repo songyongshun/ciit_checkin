@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ciit-checkin"
-version = "0.2.1"
+version = "0.2.2"
 
 authors = [
   {name = "Yongshun Song", email = "ys_song@foxmail.com"}
@@ -19,7 +19,7 @@ readme = "README.md"
 
 license = "MIT"
 license-files = ["LICENSE"]
-keywords = ["ciit", "checkin", "attendance", "csv", "admin"]
+keywords = ["ciit", "checkin", "attendance", "seat", "admin"]
 
 dependencies = [
     "PyYAML"
@@ -27,7 +27,6 @@ dependencies = [
 
 [project.scripts]
 checkin = "checkin:checkin_server"
-gen_qrcode = "checkin:gen_qrcode"
 
 [tool.setuptools.package-data]
 checkin = ["*.html"]

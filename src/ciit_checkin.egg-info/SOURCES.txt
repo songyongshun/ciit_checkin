@@ -5,6 +5,7 @@ src/checkin/__init__.py
 src/checkin/checkin.html
 src/checkin/checkinhandler.py
 src/checkin/database.py
+src/checkin/main.py
 src/checkin/manage.html
 src/checkin/qrcode_utils.py
 src/checkin/server.py

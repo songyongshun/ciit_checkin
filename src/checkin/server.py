@@ -2,7 +2,7 @@ from http.server import HTTPServer
 from .checkinhandler import CheckinHandler
 from .database import init_database
 
-def run_server(host: str = "127.0.0.1", port: int = 8000, room_info_path=None):
+def run_server(host: str = "127.0.0.1", port: int = 8000):
     # 初始化数据库
     init_database()
     
