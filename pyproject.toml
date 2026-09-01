@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ciit-checkin"
-version = "0.2.2"
+version = "0.2.4"
 
 authors = [
   {name = "Yongshun Song", email = "ys_song@foxmail.com"}
@@ -22,7 +22,9 @@ license-files = ["LICENSE"]
 keywords = ["ciit", "checkin", "attendance", "seat", "admin"]
 
 dependencies = [
-    "PyYAML"
+    "PyYAML",
+    "qrcode",
+    "Pillow"
 ]
 
 [project.scripts]
