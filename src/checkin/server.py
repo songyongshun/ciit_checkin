@@ -23,8 +23,9 @@ def run_server(host: str = "127.0.0.1", port: int = 8000, room_info_path: Option
         except Exception as e:
             print(f"Failed to load room info config {room_info_path}: {e}")
     
-    # 设置 public_ip
+    # 设置 public_ip 与 public_port（供二维码生成 / 管理页展示使用）
     CheckinHandler.public_ip = public_ip
+    CheckinHandler.public_port = int(port)
     
     addr = (host, int(port))
     server = HTTPServer(addr, CheckinHandler)

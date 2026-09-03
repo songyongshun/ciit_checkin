@@ -1,9 +1,46 @@
 import os
+import re
 import subprocess
 import qrcode
 from qrcode.constants import ERROR_CORRECT_L
 import qrcode.image.pil as qrcode_image_pil
 from PIL import ImageDraw, ImageFont
+
+def _host_has_port(host):
+    """
+    启发式判断 host 是否已显式携带端口（避免重复追加）。
+    True  示例: "1.2.3.4:8080", "domain.com:8080", "[::1]:8080"
+    False 示例: "1.2.3.4", "domain.com", "[::1]" (裸 IPv6), "::1"
+    """
+    if host.startswith("["):
+        # 中括号 IPv6，如 [::1] 或 [::1]:8080
+        return bool(re.search(r"\]:\d+$", host))
+    # 恰好一个冒号且以数字结尾 → host:port；裸 IPv6 含多个冒号视为无端口
+    if host.count(":") == 1:
+        return bool(re.search(r":\d+$", host))
+    return False
+
+
+def build_base_url(host, port=None):
+    """
+    拼接二维码/管理页使用的对外 URL 前缀，如 http://1.2.3.4:8000。
+    - host 已含端口（如 "1.2.3.4:8080"）时不再追加；
+    - 端口为空、为 0 或默认 http 端口 80 时不写端口。
+    """
+    host = (host or "").strip()
+    if not host:
+        host = "127.0.0.1"
+    if _host_has_port(host):
+        return f"http://{host}"
+    if port is not None:
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            port = None
+        if port and port != 80:
+            return f"http://{host}:{port}"
+    return f"http://{host}"
+
 
 def generate_qr_codes(handler, classroom_id):
     """
@@ -16,12 +53,13 @@ def generate_qr_codes(handler, classroom_id):
         return False
 
     public_ip = getattr(handler, 'public_ip', '127.0.0.1')
+    public_port = getattr(handler, 'public_port', None)
     total_seats = min(row * col, 48)
 
     output_dir = os.path.join("data", classroom_id, "qrcode")
     os.makedirs(output_dir, exist_ok=True)
 
-    base_url = f"http://{public_ip}/checkin/{classroom_id}/checkin-{{:02d}}.html"
+    base_url = f"{build_base_url(public_ip, public_port)}/checkin/{classroom_id}/checkin-{{:02d}}.html"
 
     for num in range(1, total_seats + 1):
         qr = qrcode.QRCode(

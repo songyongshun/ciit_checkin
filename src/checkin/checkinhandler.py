@@ -28,11 +28,13 @@ import sqlite3
 from .qrcode_utils import (
     generate_qr_codes,
     generate_latex_file,
-    compile_latex_to_pdf
+    compile_latex_to_pdf,
+    build_base_url
 )
 
 class CheckinHandler(BaseHTTPRequestHandler):
     public_ip = "127.0.0.1"  # 将作为实例属性或通过 run_server 设置
+    public_port = None       # 将通过 run_server 设置实际监听端口
 
     # 全局签到状态字典：classroom_id -> bool (True=允许签到)
     checkin_enabled = {}
@@ -307,10 +309,11 @@ class CheckinHandler(BaseHTTPRequestHandler):
         if path == "/checkin/manage/list":
             classrooms = get_all_classrooms()
             public_ip = getattr(CheckinHandler, 'public_ip', 'localhost')
+            public_port = getattr(CheckinHandler, 'public_port', None)
             
             html = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>教室列表</title></head><body>"
             html += "<h2>当前配置的教室</h2>"
-            html += f"<p><strong>公共IP:</strong> {public_ip}</p>"
+            html += f"<p><strong>公共地址:</strong> {build_base_url(public_ip, public_port)}</p>"
             html += "<ul>"
             for room in classrooms:
                 html += f"<li>教室ID: {room['id']}, 行: {room['row']}, 列: {room['column']} "
