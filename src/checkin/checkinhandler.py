@@ -214,6 +214,62 @@ class CheckinHandler(BaseHTTPRequestHandler):
         html_content = html_content.replace('{{message}}', msg_html)
         return html_content.encode('utf-8')
 
+    def _render_checkin_all_form(self, message='', classroom_id=None):
+        try:
+            html_content = importlib.resources.read_text('checkin', 'checkin_all.html', encoding='utf-8')
+        except FileNotFoundError:
+            html_content = "<html><body><h2>页面丢失</h2></body></html>"
+        except Exception:
+            html_content = "<html><body><h2>模板加载失败</h2></body></html>"
+
+        msg_html = f'<p style="color:green">{message}</p>' if message else ''
+        html_content = html_content.replace('{{message}}', msg_html)
+
+        # 动态生成座位图
+        seat_map_html = self._build_seat_map_html(classroom_id)
+        html_content = html_content.replace('<!--SEAT_MAP_PLACEHOLDER-->', seat_map_html)
+
+        return html_content.encode('utf-8')
+
+    def _build_seat_map_html(self, classroom_id):
+        """根据教室配置动态生成座位图HTML（学生视角：讲台在上方）"""
+        row, col = 4, 12  # 默认值
+        max_seats = 48
+
+        if classroom_id:
+            config = get_classroom_by_id(classroom_id)
+            if config:
+                _, r, c = config
+                row = r or 4
+                col = c or 12
+                max_seats = min(row * col, 48)
+
+        html = '<div class="seat-map">'
+        html += '<div class="podium">讲 台</div>'
+        html += '<table>'
+
+        # 列标题行
+        html += '<tr class="row-label"><td></td>'
+        for c in range(1, col + 1):
+            html += f'<td>{c}</td>'
+        html += '</tr>'
+
+        # 座位行（正序显示，第1排在最上面，离讲台最近）
+        for r in range(1, row + 1):
+            html += f'<tr><td class="row-label">第<br>{r}<br>排</td>'
+            for c in range(1, col + 1):
+                seat_num = (r - 1) * col + c
+                if seat_num <= max_seats:
+                    html += f'<td class="seat">{seat_num:02d}</td>'
+                else:
+                    html += '<td></td>'
+            html += '</tr>'
+
+        html += '</table>'
+        html += '</div>'
+
+        return html
+
     def _render_manage(self):
         try:
             return importlib.resources.read_text('checkin', 'manage.html', encoding='utf-8').encode('utf-8')
@@ -231,7 +287,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
         return (None, None, None)
 
     def _build_table_html(self, classroom_id):
-        """基于内存配置构建表格"""
+        """基于内存配置构建表格（教师视角：讲台在下方，座位左右镜像）"""
         classroom_id, row, col = self._get_room_config(classroom_id)  # ✅ 接收 id
         if not classroom_id:
             return "<h2>配置错误</h2>"
@@ -242,7 +298,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
         # 从 checkin-temp 表读取签到数据
         temp_checkins = get_temp_checkins_by_classroom(classroom_id)
         
-        # 构建表格
+        # 构建表格（学生视角：第1排左边是01）
         table = [["" for _ in range(col)] for _ in range(row)]
         for name, seat_number in temp_checkins:
             try:
@@ -254,11 +310,11 @@ class CheckinHandler(BaseHTTPRequestHandler):
             except (ValueError, IndexError):
                 continue
 
-        # 生成HTML (倒序显示行)
+        # 生成HTML（教师视角：行倒序 + 每行左右翻转）
         table_html = "<table border='1' style='width:100%; border-collapse: collapse;'>\n"
-        for tr in reversed(table):  # 倒序显示
+        for tr in reversed(table):  # 倒序显示行（第1排在最下面）
             table_html += "  <tr>\n"
-            for cell in tr:
+            for cell in reversed(tr):  # 每行左右翻转
                 table_html += f"    <td>{cell}</td>\n"
             table_html += "  </tr>\n"
         table_html += "</table>"
@@ -328,8 +384,8 @@ class CheckinHandler(BaseHTTPRequestHandler):
             self.wfile.write(html.encode('utf-8'))
             return
 
-        # ✅ 匹配 /checkin/{id}/admin.html 或 /checkin/{id}/checkin-XX.html
-        match = re.match(r'^/checkin/(\d{3,4})/(admin\.html|checkin-\d{2}\.html)$', path)
+        # ✅ 匹配 /checkin/{id}/admin.html 或 /checkin/{id}/checkin-XX.html 或 /checkin/{id}/checkin-all.html
+        match = re.match(r'^/checkin/(\d{3,4})/(admin\.html|checkin-\d{2}\.html|checkin-all\.html)$', path)
         if match:
             classroom_id = match.group(1)
             page_type = match.group(2)
@@ -350,6 +406,13 @@ class CheckinHandler(BaseHTTPRequestHandler):
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
                 self.wfile.write(self._render_admin(table_html=table_html, classroom_id=classroom_id))  # ✅ 传递 classroom_id
+                return
+
+            elif page_type == "checkin-all.html":
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(self._render_checkin_all_form(classroom_id=classroom_id))
                 return
 
             elif page_type.startswith("checkin-"):
@@ -402,6 +465,11 @@ class CheckinHandler(BaseHTTPRequestHandler):
     <div class="form-group">
       <label for="csv_file">选择 CSV 文件：</label>
       <input type="file" id="csv_file" name="csv_file" accept=".csv" required>
+    </div>
+    <div class="form-group" style="background:#f9f9f9; border:1px solid #ddd; border-radius:4px; padding:12px; font-size:14px; color:#555;">
+      <strong>CSV 格式说明：</strong>每行一条记录，格式为 <code>学号,姓名,班级</code>，无表头行。<br>
+      示例：<br>
+      <code>2243713119,刘旺,24人工智能现场工程师</code>
     </div>
     <button type="submit">上传并导入</button>
   </form>
@@ -902,7 +970,8 @@ body {{
 <html><head><meta charset="utf-8"><title>PDF生成失败</title></head>
 <body>
 <h2>PDF生成失败</h2>
-<p>LaTeX文件已生成，但编译PDF失败。请确保已安装LaTeX发行版（如MiKTeX或TeX Live）。</p>
+<p>LaTeX文件已生成，但编译PDF失败。请确保已安装以下系统包：</p>
+<p><code>sudo apt install texlive texlive-pictures</code></p>
 <p>LaTeX文件位置: {tex_file}</p>
 <p><a href="/checkin/manage.html">返回管理页面</a></p>
 </body></html>"""
@@ -1257,7 +1326,88 @@ ul {{ margin-top: 10px; }}
             self.end_headers()
             self.wfile.write(self._render_form(message=message))
             return
-        
+
+        # ✅ 处理 checkin-all.html 的 POST 请求（座位号来自表单）
+        checkin_all_post_match = re.match(r'^/checkin/(\d{3,4})/checkin-all\.html$', path)
+        if checkin_all_post_match:
+            classroom_id = checkin_all_post_match.group(1)
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length) if content_length > 0 else b''
+            content_type = self.headers.get('Content-Type', '')
+
+            student_id = None
+            seat_number = None
+            if 'application/json' in content_type:
+                try:
+                    data = json.loads(body.decode('utf-8'))
+                    student_id = data.get('student_id') or data.get('user_id')
+                    seat_number = data.get('seat_number')
+                except json.JSONDecodeError:
+                    student_id = None
+            else:
+                try:
+                    parsed = urllib.parse.parse_qs(body.decode('utf-8'))
+                    student_id = parsed.get('student_id', [None])[0]
+                    seat_number = parsed.get('seat_number', [None])[0]
+                except Exception:
+                    student_id = None
+
+            if not student_id:
+                message = "缺少学号"
+                status = 400
+            elif not seat_number:
+                message = "缺少座位号"
+                status = 400
+            else:
+                # 验证座位号是否为有效数字
+                try:
+                    seq = int(seat_number)
+                except (ValueError, TypeError):
+                    message = "座位号必须是有效数字"
+                    status = 400
+                    seq = None
+
+                if seq is not None:
+                    # 获取教室配置以确定最大座位数
+                    classroom_config = get_classroom_by_id(classroom_id)
+                    if classroom_config:
+                        _, row, col = classroom_config
+                        max_seats = min(row * col, 48)
+                    else:
+                        max_seats = 48
+
+                    if seq < 1 or seq > max_seats:
+                        message = f"座位号超出范围（1-{max_seats}）"
+                        status = 400
+                    elif not CheckinHandler.checkin_enabled.get(classroom_id, False):
+                        message = "签到未开始或已结束"
+                        status = 403
+                    else:
+                        # 查询数据库获取姓名
+                        conn = sqlite3.connect(DATABASE_PATH)
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT name FROM students WHERE student_id = ?", (student_id,))
+                        row = cursor.fetchone()
+                        conn.close()
+
+                        if not row:
+                            message = "学号未找到，请确认是否已导入名单"
+                            status = 400
+                        else:
+                            name = row[0]
+                            if add_temp_checkin(student_id, classroom_id, seq, "已签"):
+                                message = f"签到成功：{name}"
+                                status = 200
+                            else:
+                                message = "签到失败"
+                                status = 500
+
+            self.send_response(status)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(self._render_checkin_all_form(message=message, classroom_id=classroom_id))
+            return
+
 
         if path == "/checkin/export-record":
             content_length = int(self.headers.get('Content-Length', 0))

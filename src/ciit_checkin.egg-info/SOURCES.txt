@@ -3,6 +3,7 @@ README.md
 pyproject.toml
 src/checkin/__init__.py
 src/checkin/checkin.html
+src/checkin/checkin_all.html
 src/checkin/checkinhandler.py
 src/checkin/database.py
 src/checkin/main.py

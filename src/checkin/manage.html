@@ -78,6 +78,9 @@
       <label>生成二维码的教室ID:</label>
       <input name="classroom_id" placeholder="输入教室ID" required>
     </div>
+    <p style="font-size: 13px; color: #856404; background: #fff3cd; border:1px solid #ffeeba; border-radius:4px; padding:8px 12px; margin:10px 0;">
+      <strong>提示：</strong>生成打印文件需要安装 <code>texlive</code> 和 <code>texlive-pictures</code> 包：<code style="font-size:12px;">sudo apt install texlive texlive-pictures</code>
+    </p>
     <button type="submit" class="btn-qrcode">生成二维码</button>
   </form>
 
@@ -99,5 +102,14 @@
 
   <!-- 自动加载班级列表 -->
   <iframe src="/checkin/manage/list-students" style="width:100%; border:none; min-height:200px;"></iframe>
+
+  <script>
+    function deleteClass(className) {
+      if (confirm('确定要删除班级 "' + className + '" 吗？此操作将删除该班级的所有学生名单，不可恢复！')) {
+        document.getElementById('delete-class-name').value = className;
+        document.getElementById('delete-form').submit();
+      }
+    }
+  </script>
 </body>
 </html>
