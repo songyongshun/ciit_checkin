@@ -1,4 +1,4 @@
-from http.server import HTTPServer
+from http.server import ThreadingHTTPServer
 from typing import Optional
 from .checkinhandler import CheckinHandler
 from .database import init_database, add_classroom
@@ -28,8 +28,8 @@ def run_server(host: str = "127.0.0.1", port: int = 8000, room_info_path: Option
     CheckinHandler.public_port = int(port)
     
     addr = (host, int(port))
-    server = HTTPServer(addr, CheckinHandler)
-    print(f"Serving on http://{addr[0]}:{addr[1]}/checkin/")
+    server = ThreadingHTTPServer(addr, CheckinHandler)
+    print(f"Serving on http://{addr[0]}:{addr[1]}/checkin/ (ThreadingHTTPServer - concurrent requests supported)")
     print(f"Manage config at http://{addr[0]}:{addr[1]}/checkin/manage.html")
     print(f"Public IP (used in QR codes): {public_ip}")
     try:

@@ -6,6 +6,8 @@ DATABASE_PATH = "checkin.db"
 def init_database():
     """初始化数据库，创建 classrooms、students 和 checkin 表"""
     conn = sqlite3.connect(DATABASE_PATH)
+    # 启用 WAL 模式以支持更好的并发读取性能
+    conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS classrooms (

@@ -12,6 +12,8 @@
     .btn-delete { background: #f44336; }
     .btn-list { background: #2196F3; }
     .btn-qrcode { background: #9C27B0; }
+    .qrcode-buttons { display: flex; gap: 10px; margin-top: 10px; }
+    .qrcode-buttons button { flex: 1; }
     .classroom-list { margin-top: 20px; padding: 15px; background: #f9f9f9; border-radius: 5px; }
     .classroom-item { padding: 8px; border-bottom: 1px solid #eee; }
     .classroom-item:last-child { border-bottom: none; }
@@ -72,16 +74,27 @@
             onclick="return confirm('确定要删除该教室吗？')">删除教室</button>
   </form>
 
-  <!-- 生成二维码表单 -->
-  <form method="POST" action="/checkin/manage/generate-qrcode" style="margin-top: 20px;">
+  <!-- 生成二维码 -->
+  <div style="margin-top: 20px;">
     <div class="form-group">
       <label>生成二维码的教室ID:</label>
-      <input name="classroom_id" placeholder="输入教室ID" required>
+      <input id="qrcode-classroom-id" name="classroom_id" placeholder="输入教室ID" required>
     </div>
     <p style="font-size: 13px; color: #856404; background: #fff3cd; border:1px solid #ffeeba; border-radius:4px; padding:8px 12px; margin:10px 0;">
       <strong>提示：</strong>生成打印文件需要安装 <code>texlive</code> 和 <code>texlive-pictures</code> 包：<code style="font-size:12px;">sudo apt install texlive texlive-pictures</code>
     </p>
-    <button type="submit" class="btn-qrcode">生成二维码</button>
+    <div class="qrcode-buttons">
+      <button type="button" class="btn-qrcode" onclick="generateSeatQrcode()">生成座位二维码</button>
+      <button type="button" class="btn-qrcode" style="background-color: #FF9800;" onclick="generateCheckinQrcode()">生成签到二维码</button>
+    </div>
+  </div>
+
+  <!-- 隐藏的表单用于提交 -->
+  <form id="seat-qrcode-form" method="POST" action="/checkin/manage/generate-qrcode" style="display:none;">
+    <input type="hidden" name="classroom_id" id="seat-qrcode-classroom-id">
+  </form>
+  <form id="checkin-qrcode-form" method="POST" action="/checkin/manage/generate-checkin-qrcode" style="display:none;">
+    <input type="hidden" name="classroom_id" id="checkin-qrcode-classroom-id">
   </form>
 
   <!-- 添加导入学生名单的链接 -->
@@ -109,6 +122,26 @@
         document.getElementById('delete-class-name').value = className;
         document.getElementById('delete-form').submit();
       }
+    }
+
+    function generateSeatQrcode() {
+      var classroomId = document.getElementById('qrcode-classroom-id').value;
+      if (!classroomId) {
+        alert('请输入教室ID');
+        return;
+      }
+      document.getElementById('seat-qrcode-classroom-id').value = classroomId;
+      document.getElementById('seat-qrcode-form').submit();
+    }
+
+    function generateCheckinQrcode() {
+      var classroomId = document.getElementById('qrcode-classroom-id').value;
+      if (!classroomId) {
+        alert('请输入教室ID');
+        return;
+      }
+      document.getElementById('checkin-qrcode-classroom-id').value = classroomId;
+      document.getElementById('checkin-qrcode-form').submit();
     }
   </script>
 </body>

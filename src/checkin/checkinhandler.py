@@ -1,8 +1,10 @@
+import socket
 import importlib.resources
 from http.server import BaseHTTPRequestHandler
 import json
 import os
 import re
+import threading
 import urllib.parse
 import datetime
 from .database import (
@@ -38,6 +40,16 @@ class CheckinHandler(BaseHTTPRequestHandler):
 
     # 全局签到状态字典：classroom_id -> bool (True=允许签到)
     checkin_enabled = {}
+    # 线程锁，用于保护 checkin_enabled 的并发访问
+    _checkin_lock = threading.Lock()
+
+    def _safe_write(self, data):
+        """安全写入响应，捕获客户端断开连接的异常"""
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, socket.error):
+            # 客户端已断开连接，静默忽略
+            pass
 
     # 内联 admin 页面模板（不再使用外部文件）
     _admin_template = '''<!DOCTYPE html>
@@ -150,6 +162,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
 <body>
   <div class="container">
   <h2>签到情况</h2>
+  <button type="button" class="btn btn-refresh" onclick="location.reload()" style="background-color: #607D8B; margin-bottom: 15px;">刷新</button>
   {table_html}
   <div class="label">讲台</div>
   <div class="status">{status_text}</div>
@@ -177,8 +190,9 @@ class CheckinHandler(BaseHTTPRequestHandler):
 
     def _render_admin(self, table_html='', classroom_id=''):
         """动态生成 admin 页面"""
-        # 判断签到状态
-        is_checkin_active = CheckinHandler.checkin_enabled.get(classroom_id, False)
+        # 判断签到状态（线程安全访问）
+        with CheckinHandler._checkin_lock:
+            is_checkin_active = CheckinHandler.checkin_enabled.get(classroom_id, False)
         status_text = "正在签到..." if is_checkin_active else "未开始签到"
         
         # 生成控制按钮
@@ -328,7 +342,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(self._render_manage())
+            self._safe_write(self._render_manage())
             return
 
         # 新增：提供 qrcode 目录下的静态文件（PDF/PNG）
@@ -341,7 +355,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
             if not (filename.endswith('.pdf') or filename.endswith('.png')):
                 self.send_response(403)
                 self.end_headers()
-                self.wfile.write(b"Forbidden: Invalid file type")
+                self._safe_write(b"Forbidden: Invalid file type")
                 return
 
             file_path = os.path.join("data", classroom_id, "qrcode", filename)
@@ -354,11 +368,44 @@ class CheckinHandler(BaseHTTPRequestHandler):
                 self.send_header('Content-Disposition', f'inline; filename="{filename}"')
                 self.end_headers()
                 with open(file_path, 'rb') as f:
-                    self.wfile.write(f.read())
+                    self._safe_write(f.read())
             else:
                 self.send_response(404)
                 self.end_headers()
-                self.wfile.write(b"<h2>File not found</h2>")
+                self._safe_write(b"<h2>File not found</h2>")
+            return
+
+        # 新增：展示签到二维码页面
+        show_qrcode_match = re.match(r'^/checkin/(\d{3,4})/show_qrcode$', path)
+        if show_qrcode_match:
+            classroom_id = show_qrcode_match.group(1)
+            qr_image_url = f"/checkin/{classroom_id}/qrcode/checkin-qrcode-{classroom_id}.png"
+            html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>签到二维码 - 教室 {classroom_id}</title>
+  <style>
+    body {{ font-family: sans-serif; padding: 20px; background-color: #f5f5f5; text-align: center; }}
+    .container {{ max-width: 500px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+    h2 {{ color: #333; margin-bottom: 20px; }}
+    img {{ max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 8px; }}
+    .back {{ margin-top: 20px; }}
+    .back a {{ color: #2196F3; text-decoration: none; }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>教室 {classroom_id} 签到二维码</h2>
+    <img src="{qr_image_url}" alt="签到二维码">
+    <p class="back"><a href="/checkin/manage.html">返回管理页面</a></p>
+  </div>
+</body>
+</html>"""
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self._safe_write(html.encode('utf-8'))
             return
 
         # 新增：列出所有教室
@@ -381,7 +428,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html.encode('utf-8'))
+            self._safe_write(html.encode('utf-8'))
             return
 
         # ✅ 匹配 /checkin/{id}/admin.html 或 /checkin/{id}/checkin-XX.html 或 /checkin/{id}/checkin-all.html
@@ -396,7 +443,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
                 self.send_response(404)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write("<h2>教室配置未找到</h2>".encode('utf-8'))
+                self._safe_write("<h2>教室配置未找到</h2>".encode('utf-8'))
                 return
 
             if page_type == "admin.html":
@@ -405,21 +452,21 @@ class CheckinHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(self._render_admin(table_html=table_html, classroom_id=classroom_id))  # ✅ 传递 classroom_id
+                self._safe_write(self._render_admin(table_html=table_html, classroom_id=classroom_id))  # ✅ 传递 classroom_id
                 return
 
             elif page_type == "checkin-all.html":
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(self._render_checkin_all_form(classroom_id=classroom_id))
+                self._safe_write(self._render_checkin_all_form(classroom_id=classroom_id))
                 return
 
             elif page_type.startswith("checkin-"):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(self._render_form())
+                self._safe_write(self._render_form())
                 return
 
         # 新增：列出已导入的班级及学生数量
@@ -442,7 +489,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html.encode('utf-8'))
+            self._safe_write(html.encode('utf-8'))
             return
 
         # 新增：返回导入学生页面（动态生成）
@@ -479,7 +526,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html.encode('utf-8'))
+            self._safe_write(html.encode('utf-8'))
             return
 
         # 新增：按学号查看签到情况
@@ -581,13 +628,13 @@ class CheckinHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html.encode('utf-8'))
+            self._safe_write(html.encode('utf-8'))
             return
 
         self.send_response(404)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
-        self.wfile.write("<h2>无效路径，请通过 /checkin/{教室ID}/admin.html 访问</h2>".encode('utf-8'))
+        self._safe_write("<h2>无效路径，请通过 /checkin/{教室ID}/admin.html 访问</h2>".encode('utf-8'))
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
@@ -713,7 +760,7 @@ body {{
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html_resp.encode('utf-8'))
+            self._safe_write(html_resp.encode('utf-8'))
             return
 
         # ✅ 查看签到记录
@@ -733,7 +780,7 @@ body {{
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(html_resp.encode('utf-8'))
+                self._safe_write(html_resp.encode('utf-8'))
                 return
             
             # 查询签到记录
@@ -861,7 +908,7 @@ body {{
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html_resp.encode('utf-8'))
+            self._safe_write(html_resp.encode('utf-8'))
             return
 
         # ✅ 添加教室: /checkin/manage/add
@@ -938,10 +985,55 @@ body {{
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html.encode('utf-8'))
+            self._safe_write(html.encode('utf-8'))
             return
 
-        # 新增：生成打印文件（LaTeX + PDF）
+        # 新增：生成签到二维码（签到页面URL的二维码）
+        if path == "/checkin/manage/generate-checkin-qrcode":
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            params = urllib.parse.parse_qs(body)
+
+            classroom_id = params.get("classroom_id", [""])[0]
+
+            if not classroom_id:
+                self._send_import_result("教室ID不能为空", success=False)
+                return
+
+            # 生成签到二维码
+            public_ip = getattr(self, 'public_ip', '127.0.0.1')
+            public_port = getattr(self, 'public_port', None)
+            base_url = build_base_url(public_ip, public_port)
+            checkin_url = f"{base_url}/checkin/{classroom_id}/checkin-all.html"
+
+            # 生成二维码图片
+            import qrcode
+            from qrcode.constants import ERROR_CORRECT_L
+            import qrcode.image.pil as qrcode_image_pil
+
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=ERROR_CORRECT_L,
+                box_size=10,
+                border=4,
+            )
+            qr.add_data(checkin_url)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white", image_factory=qrcode_image_pil.PilImage).get_image().convert("RGB")
+
+            # 保存二维码图片
+            output_dir = os.path.join("data", classroom_id, "qrcode")
+            os.makedirs(output_dir, exist_ok=True)
+            qr_file = os.path.join(output_dir, f"checkin-qrcode-{classroom_id}.png")
+            img.save(qr_file)
+
+            # 重定向到展示页面
+            self.send_response(302)
+            self.send_header('Location', f"/checkin/{classroom_id}/show_qrcode")
+            self.end_headers()
+            return
+
+        # 新增：展示签到二维码页面
         if path == "/checkin/manage/generate-print-file":
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length).decode('utf-8')
@@ -987,7 +1079,7 @@ body {{
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html.encode('utf-8'))
+            self._safe_write(html.encode('utf-8'))
             return
 
         # 新增：导入学生名单
@@ -1161,7 +1253,7 @@ ul {{ margin-top: 10px; }}
                 self.send_response(400)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(error_html.encode('utf-8'))
+                self._safe_write(error_html.encode('utf-8'))
                 return
             
             # 清空当前教室的所有临时签到记录
@@ -1188,7 +1280,7 @@ ul {{ margin-top: 10px; }}
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html_resp.encode('utf-8'))
+            self._safe_write(html_resp.encode('utf-8'))
             return
 
         # ✅ 匹配 /checkin/{id}/save 和 /checkin/{id}/reset
@@ -1214,7 +1306,7 @@ ul {{ margin-top: 10px; }}
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html_resp.encode('utf-8'))
+            self._safe_write(html_resp.encode('utf-8'))
             return
 
         if reset_match:
@@ -1233,14 +1325,15 @@ ul {{ margin-top: 10px; }}
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html_resp.encode('utf-8'))
+            self._safe_write(html_resp.encode('utf-8'))
             return
 
         # ✅ 开始签到
         start_match = re.match(r'^/checkin/(\d{3,4})/start-checkin$', path)
         if start_match:
             classroom_id = start_match.group(1)
-            CheckinHandler.checkin_enabled[classroom_id] = True
+            with CheckinHandler._checkin_lock:
+                CheckinHandler.checkin_enabled[classroom_id] = True
             redirect_url = f"/checkin/{classroom_id}/admin.html"
             html_resp = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>签到已开始</title>
@@ -1249,14 +1342,15 @@ ul {{ margin-top: 10px; }}
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html_resp.encode('utf-8'))
+            self._safe_write(html_resp.encode('utf-8'))
             return
 
         # ✅ 结束签到
         stop_match = re.match(r'^/checkin/(\d{3,4})/stop-checkin$', path)
         if stop_match:
             classroom_id = stop_match.group(1)
-            CheckinHandler.checkin_enabled[classroom_id] = False
+            with CheckinHandler._checkin_lock:
+                CheckinHandler.checkin_enabled[classroom_id] = False
             redirect_url = f"/checkin/{classroom_id}/admin.html"
             html_resp = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>签到已结束</title>
@@ -1265,7 +1359,7 @@ ul {{ margin-top: 10px; }}
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(html_resp.encode('utf-8'))
+            self._safe_write(html_resp.encode('utf-8'))
             return
 
         # 仅在路径为 /checkin/{id}/checkin-XX.html 时处理学生扫码签到请求，
@@ -1294,8 +1388,10 @@ ul {{ margin-top: 10px; }}
                 classroom_id = checkin_post_match.group(1)
                 seq = int(checkin_post_match.group(2))
 
-                # 检查是否允许签到
-                if not CheckinHandler.checkin_enabled.get(classroom_id, False):
+                # 检查是否允许签到（线程安全访问）
+                with CheckinHandler._checkin_lock:
+                    is_enabled = CheckinHandler.checkin_enabled.get(classroom_id, False)
+                if not is_enabled:
                     message = "签到未开始或已结束"
                     status = 403
                 else:
@@ -1324,7 +1420,7 @@ ul {{ margin-top: 10px; }}
             self.send_response(status)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(self._render_form(message=message))
+            self._safe_write(self._render_form(message=message))
             return
 
         # ✅ 处理 checkin-all.html 的 POST 请求（座位号来自表单）
@@ -1379,33 +1475,37 @@ ul {{ margin-top: 10px; }}
                     if seq < 1 or seq > max_seats:
                         message = f"座位号超出范围（1-{max_seats}）"
                         status = 400
-                    elif not CheckinHandler.checkin_enabled.get(classroom_id, False):
-                        message = "签到未开始或已结束"
-                        status = 403
                     else:
-                        # 查询数据库获取姓名
-                        conn = sqlite3.connect(DATABASE_PATH)
-                        cursor = conn.cursor()
-                        cursor.execute("SELECT name FROM students WHERE student_id = ?", (student_id,))
-                        row = cursor.fetchone()
-                        conn.close()
-
-                        if not row:
-                            message = "学号未找到，请确认是否已导入名单"
-                            status = 400
+                        # 检查是否允许签到（线程安全访问）
+                        with CheckinHandler._checkin_lock:
+                            is_enabled = CheckinHandler.checkin_enabled.get(classroom_id, False)
+                        if not is_enabled:
+                            message = "签到未开始或已结束"
+                            status = 403
                         else:
-                            name = row[0]
-                            if add_temp_checkin(student_id, classroom_id, seq, "已签"):
-                                message = f"签到成功：{name}"
-                                status = 200
+                            # 查询数据库获取姓名
+                            conn = sqlite3.connect(DATABASE_PATH)
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT name FROM students WHERE student_id = ?", (student_id,))
+                            row = cursor.fetchone()
+                            conn.close()
+
+                            if not row:
+                                message = "学号未找到，请确认是否已导入名单"
+                                status = 400
                             else:
-                                message = "签到失败"
-                                status = 500
+                                name = row[0]
+                                if add_temp_checkin(student_id, classroom_id, seq, "已签"):
+                                    message = f"签到成功：{name}"
+                                    status = 200
+                                else:
+                                    message = "签到失败"
+                                    status = 500
 
             self.send_response(status)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(self._render_checkin_all_form(message=message, classroom_id=classroom_id))
+            self._safe_write(self._render_checkin_all_form(message=message, classroom_id=classroom_id))
             return
 
 
@@ -1432,7 +1532,7 @@ ul {{ margin-top: 10px; }}
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(html.encode('utf-8'))
+                self._safe_write(html.encode('utf-8'))
                 return
             
             if export_items:
@@ -1590,7 +1690,7 @@ ul {{ margin-top: 10px; }}
             self.send_header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
             self.send_header('Content-Disposition', disposition)
             self.end_headers()
-            self.wfile.write(bio.read())
+            self._safe_write(bio.read())
             return
 
     def _send_import_result(self, message, success=True):
@@ -1606,5 +1706,5 @@ ul {{ margin-top: 10px; }}
         self.send_response(status)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
-        self.wfile.write(html.encode('utf-8'))
+        self._safe_write(html.encode('utf-8'))
 
