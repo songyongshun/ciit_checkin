@@ -253,7 +253,7 @@ def clear_temp_checkins(classroom_id):
 
 
 def add_temp_checkin(student_id, classroom_id, seat_number, status="已签"):
-    """添加临时签到记录"""
+    """添加临时签到记录，同一学生在同一教室只保留一条记录"""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     # 先查询学生信息
@@ -264,9 +264,16 @@ def add_temp_checkin(student_id, classroom_id, seat_number, status="已签"):
         return False
     
     name, class_name = student_row
-    # 插入临时签到记录
+    
+    # 先删除该学生在该教室的已有签到记录，避免重复签到
     cursor.execute('''
-        INSERT OR REPLACE INTO "checkin-temp" 
+        DELETE FROM "checkin-temp" 
+        WHERE student_id = ? AND classroom_id = ?
+    ''', (student_id, classroom_id))
+    
+    # 插入新的签到记录
+    cursor.execute('''
+        INSERT INTO "checkin-temp" 
         (student_id, status, class_name, name, seat_number, classroom_id) 
         VALUES (?, ?, ?, ?, ?, ?)
     ''', (student_id, status, class_name, name, seat_number, classroom_id))
