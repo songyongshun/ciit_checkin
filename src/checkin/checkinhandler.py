@@ -878,7 +878,7 @@ body {{
                 table_rows = ""
                 for record in records:
                     # 复选框的值编码为 course||save_time||classroom_id
-                    cbval = f"{record['course']}||{record['save_time']}||{record['classroom_id']}"
+                    cbval = f"{record['course']}||{record['save_time']}||{record['classroom_id']}||{record['class_name']}"
                     table_rows += f"""
                 <tr>
                     <td><input type="checkbox" name="export_record" value="{cbval}"></td>
@@ -929,7 +929,8 @@ body {{
             <div style="margin-top:12px;">
                 <button type="button" class="btn-select" style="padding:8px 16px; background-color:#2196F3; color:white; border:none; cursor:pointer; border-radius:4px; margin-right:8px;" onclick="setAllCheckboxes(true)">全选</button>
                 <button type="button" class="btn-select" style="padding:8px 16px; background-color:#2196F3; color:white; border:none; cursor:pointer; border-radius:4px; margin-right:8px;" onclick="setAllCheckboxes(false)">全不选</button>
-                <button type="submit" class="btn-export">导出到xlsx文件</button>
+                <button type="submit" class="btn-export" name="export_type" value="checkin" style="margin-right:8px;">导出签到到xlsx文件</button>
+                <button type="submit" class="btn-export" name="export_type" value="performance">导出课堂表现到xlsx文件</button>
             </div>
             <script>
             function setAllCheckboxes(checked) {{
@@ -1631,10 +1632,14 @@ ul {{ margin-top: 10px; }}
             body = self.rfile.read(content_length).decode('utf-8')
             params = urllib.parse.parse_qs(body)
 
-            # 支持批量导出：优先从表单的 export_record[] 获取多个选中项（格式为 course||save_time||classroom_id）
+            # 批量导出：优先从表单的 export_record[] 获取多个选中项
+            # 格式为 course||save_time||classroom_id||class_name
             export_items = params.get("export_record", [])
+            # 导出类型：checkin=签到情况，performance=课堂表现（由两个导出按钮的 value 决定）
+            export_type = params.get("export_type", ["checkin"])[0]
+            if export_type not in ("checkin", "performance"):
+                export_type = "checkin"
 
-            rows = []
             # ensure these exist for filename/header fallback
             course = save_time = classroom_id = ""
 
@@ -1653,48 +1658,88 @@ ul {{ margin-top: 10px; }}
                 return
             
             if export_items:
-                # 使用第一个选中项作为导出文件命名与表头日期的来源
-                first_meta = None
+                # 解析选中项（格式：course||save_time||classroom_id[||class_name]）
+                parsed_items = []
                 for item in export_items:
-                    try:
-                        c, st, cid = item.split("||", 2)
-                    except Exception:
+                    parts = item.split("||")
+                    if len(parts) < 3:
                         continue
-                    if first_meta is None:
-                        first_meta = (c, st, cid)
-                        course, save_time, classroom_id = c, st, cid
+                    c, st, cid = parts[0], parts[1], parts[2]
+                    cls = parts[3] if len(parts) > 3 else ""
+                    parsed_items.append((c, st, cid, cls))
 
+                if not parsed_items:
+                    self._send_import_result("未找到符合条件的签到记录", success=False)
+                    return
+
+                # 列按签到时间先后排列
+                parsed_items.sort(key=lambda x: x[1])
+                # 文件命名/回退用的元信息（取第一条记录）
+                course, save_time, classroom_id = parsed_items[0][0], parsed_items[0][1], parsed_items[0][2]
+
+                # 逐条记录取明细，按学号汇总（学生名单取各记录的并集，保持首次出现顺序）
+                student_names = {}
+                item_maps = []
+                for (c, st, cid, cls) in parsed_items:
                     # 首选 helper 查询
                     recs = None
                     if get_checkin_records_by_save_time:
                         try:
-                            recs = get_checkin_records_by_save_time(c, st, cid)
+                            recs = get_checkin_records_by_save_time(c, st, cid, cls or None)
                         except Exception:
                             recs = None
 
-                    # 回退到直连查询
+                    # 回退到直连查询（helper 不可用时）。注意：真实表名为 checkin，
+                    # 部分旧库的 checkin 表可能缺少 class_performance 列，此时降级查询。
                     if recs is None:
                         try:
                             conn = sqlite3.connect(DATABASE_PATH)
                             cur = conn.cursor()
-                            cur.execute(
-                                "SELECT student_id, name, status FROM checkin_records WHERE course=? AND save_time=? AND classroom_id=?",
-                                (c, st, cid)
-                            )
-                            fetched = cur.fetchall()
+                            where = "course=? AND save_time=? AND classroom_id=?"
+                            sql_params = [c, st, cid]
+                            if cls:
+                                where += " AND class_name=?"
+                                sql_params.append(cls)
+                            try:
+                                cur.execute(
+                                    "SELECT student_id, name, status, class_performance FROM checkin "
+                                    f"WHERE {where}",
+                                    sql_params
+                                )
+                                fetched = cur.fetchall()
+                                recs = [
+                                    {"student_id": r[0], "name": r[1], "status": r[2], "performance": r[3]}
+                                    for r in fetched
+                                ]
+                            except sqlite3.Error:
+                                cur.execute(
+                                    "SELECT student_id, name, status FROM checkin "
+                                    f"WHERE {where}",
+                                    sql_params
+                                )
+                                fetched = cur.fetchall()
+                                recs = [
+                                    {"student_id": r[0], "name": r[1], "status": r[2], "performance": None}
+                                    for r in fetched
+                                ]
                             conn.close()
-                            recs = [{"student_id": r[0], "name": r[1], "status": r[2]} for r in fetched]
                         except Exception:
                             recs = []
 
+                    item_map = {}
                     for r in recs:
-                        if isinstance(r, dict):
-                            rows.append(r)
-                        else:
-                            rows.append({"student_id": r[0], "name": r[1], "status": r[2]})
+                        if not isinstance(r, dict):
+                            r = {"student_id": r[0], "name": r[1], "status": r[2]}
+                        sid = r.get("student_id") or r.get("id") or r.get("学号") or ""
+                        if not sid:
+                            continue
+                        if sid not in student_names:
+                            student_names[sid] = r.get("name") or r.get("姓名") or ""
+                        item_map[sid] = r
+                    item_maps.append(item_map)
             # end of export_items handling, continue with rows aggregation...
 
-            if not rows:
+            if not student_names:
                 self._send_import_result("未找到符合条件的签到记录", success=False)
                 return
 
@@ -1711,19 +1756,20 @@ ul {{ margin-top: 10px; }}
 
             wb = openpyxl.Workbook()
             ws = wb.active
+            sheet_title = "课堂表现" if export_type == "performance" else "签到明细"
             # 确保 ws 不为 None；如果为 None 或者设置 title 失败，则创建新 sheet
             if ws is None:
-                ws = wb.create_sheet(title="签到明细")
+                ws = wb.create_sheet(title=sheet_title)
             else:
                 try:
-                    ws.title = "签到明细"
+                    ws.title = sheet_title
                 except Exception:
-                    ws = wb.create_sheet(title="签到明细")
-            # 移除多余的空默认 sheet（可选），保留名为 "签到明细" 的表
+                    ws = wb.create_sheet(title=sheet_title)
+            # 移除多余的空默认 sheet（可选），保留数据表
             try:
                 if len(wb.sheetnames) > 1:
                     for name in list(wb.sheetnames):
-                        if name != "签到明细":
+                        if name != sheet_title:
                             sh = wb[name]
                             if sh.max_row == 1 and sh.max_column == 1 and sh.cell(1, 1).value is None:
                                 wb.remove(sh)
@@ -1748,28 +1794,46 @@ ul {{ margin-top: 10px; }}
                     return f"{g[0:4]}-{g[4:6]}-{g[6:8]}"
                 return fallback
 
-            # 第三列标题为指定的日期（yyyy-mm-dd），优先使用请求中的 save_time，否则使用今天
-            header_date = _extract_date(save_time, "")
-            if not header_date:
-                header_date = datetime.date.today().isoformat()
-            ws.append(["学号", "姓名", header_date])
+            # 构建透视表：第1-2列为学号、姓名，之后每个选中记录各占一列（按签到时间先后）
+            date_labels = []
+            date_counts = {}
+            for (_c, st, _cid, _cls) in parsed_items:
+                d = _extract_date(st, st)
+                date_labels.append(d)
+                date_counts[d] = date_counts.get(d, 0) + 1
+            # 同一天有多条记录时，列标题改用完整保存时间以示区分
+            col_titles = []
+            used_titles = set()
+            for (_c, st, _cid, _cls), d in zip(parsed_items, date_labels):
+                title = d if date_counts[d] == 1 else str(st)
+                if title in used_titles:
+                    title = f"{st}({_cid})"
+                used_titles.add(title)
+                col_titles.append(title)
 
-            # 列内容保留为签到状态（status）
-            for r in rows:
-                sid = name = status = ""
-                if isinstance(r, dict):
-                    sid = r.get("student_id") or r.get("id") or r.get("学号") or ""
-                    name = r.get("name") or r.get("姓名") or ""
-                    status = r.get("status") or r.get("state") or r.get("状态") or ""
-                else:
-                    vals = list(r)
-                    if len(vals) >= 1:
-                        sid = vals[0] or ""
-                    if len(vals) >= 2:
-                        name = vals[1] or ""
-                    if len(vals) >= 3:
-                        status = vals[2] or ""
-                ws.append([sid, name, status])
+            ws.append(["学号", "姓名"] + col_titles)
+
+            # 数据行：每个学生一行，各记录列填对应值；某记录无该学生则留空
+            for sid, name in student_names.items():
+                row_vals = []
+                for item_map in item_maps:
+                    r = item_map.get(sid)
+                    if not r:
+                        row_vals.append("")
+                        continue
+                    if export_type == "performance":
+                        perf = r.get("performance")
+                        if perf is None or perf == "":
+                            row_vals.append("")
+                        else:
+                            try:
+                                p = float(perf)
+                                row_vals.append(int(p) if p.is_integer() else p)
+                            except (TypeError, ValueError):
+                                row_vals.append(perf)
+                    else:
+                        row_vals.append(r.get("status") or "")
+                ws.append([sid, name] + row_vals)
 
             bio = BytesIO()
             wb.save(bio)
@@ -1793,7 +1857,8 @@ ul {{ margin-top: 10px; }}
                 safe_time = _safe_name(save_time)
                 safe_class = _safe_name(classroom_id)
 
-            raw_fname = f"checkin_{safe_class}_{safe_course}_{safe_time}.xlsx"
+            prefix = "performance" if export_type == "performance" else "checkin"
+            raw_fname = f"{prefix}_{safe_class}_{safe_course}_{safe_time}.xlsx"
             # 为 Content-Disposition 做 URL 引用，确保中文也可用
             quoted = urllib.parse.quote(raw_fname)
 

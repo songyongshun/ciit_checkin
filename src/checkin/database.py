@@ -376,9 +376,10 @@ def get_temp_checkins_with_ids_by_classroom(classroom_id):
     return [(row[0], row[1], row[2], row[3], row[4]) for row in rows]
 
 
-def get_checkin_records_by_save_time(course, save_time, classroom_id):
+def get_checkin_records_by_save_time(course, save_time, classroom_id, class_name=None):
     """返回指定 course + save_time + classroom_id 的签到明细，格式为 list[dict]
-    dict 包含: student_id, name, status, seat (seat 可能为 None)
+    dict 包含: student_id, name, status, seat (seat 可能为 None), performance
+    传入 class_name 时只返回该班级的记录
     """
     if not course or not save_time or not classroom_id:
         return []
@@ -386,23 +387,24 @@ def get_checkin_records_by_save_time(course, save_time, classroom_id):
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
-        # 试图查询 seat_number 字段（如果存在），否则返回 NULL 作为 seat
-        # 检查表结构中是否存在 seat_number 列
+        # 兼容旧表：seat_number / class_performance 列可能不存在
         cursor.execute("PRAGMA table_info(checkin)")
         cols = [c[1] for c in cursor.fetchall()]
-        if "seat_number" in cols:
-            cursor.execute(
-                "SELECT student_id, name, status, seat_number FROM checkin WHERE course=? AND save_time=? AND classroom_id=? ORDER BY name",
-                (course, save_time, classroom_id)
-            )
-        else:
-            cursor.execute(
-                "SELECT student_id, name, status, NULL as seat_number FROM checkin WHERE course=? AND save_time=? AND classroom_id=? ORDER BY name",
-                (course, save_time, classroom_id)
-            )
+        seat_col = "seat_number" if "seat_number" in cols else "NULL as seat_number"
+        perf_col = "class_performance" if "class_performance" in cols else "NULL as class_performance"
+        where = "course=? AND save_time=? AND classroom_id=?"
+        params = [course, save_time, classroom_id]
+        if class_name:
+            where += " AND class_name=?"
+            params.append(class_name)
+        cursor.execute(
+            f"SELECT student_id, name, status, {seat_col}, {perf_col} FROM checkin "
+            f"WHERE {where} ORDER BY name",
+            params
+        )
         fetched = cursor.fetchall()
         results = [
-            {"student_id": r[0], "name": r[1], "status": r[2], "seat": r[3]}
+            {"student_id": r[0], "name": r[1], "status": r[2], "seat": r[3], "performance": r[4]}
             for r in fetched
         ]
         return results
