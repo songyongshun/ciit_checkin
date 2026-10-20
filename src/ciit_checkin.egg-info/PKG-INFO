@@ -11,6 +11,7 @@ License-File: LICENSE
 Requires-Dist: PyYAML
 Requires-Dist: qrcode
 Requires-Dist: Pillow
+Requires-Dist: openpyxl
 Dynamic: license-file
 
 # 项目说明

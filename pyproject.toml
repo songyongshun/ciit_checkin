@@ -24,7 +24,8 @@ keywords = ["ciit", "checkin", "attendance", "seat", "admin"]
 dependencies = [
     "PyYAML",
     "qrcode",
-    "Pillow"
+    "Pillow",
+    "openpyxl"
 ]
 
 [project.scripts]
