@@ -21,6 +21,7 @@ from .database import (
     get_temp_checkins_with_ids_by_classroom,
     delete_checkin_record,
     get_checkin_summary_by_course,
+    get_classes_by_course,
     clear_temp_checkins,
     add_temp_checkin,
     get_checkin_records_by_save_time,
@@ -172,7 +173,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
       <input type="text" id="course" name="course" required>
     </div>
     <button type="submit" class="btn">保存</button>
-    <button type="submit" class="btn btn-record" formaction="/checkin/{classroom_id}/view-records">签到记录</button>
+    <button type="submit" class="btn btn-record" formaction="/checkin/{classroom_id}/view-records-select">签到记录</button>
   </form>
 
   {control_buttons}
@@ -552,9 +553,12 @@ class CheckinHandler(BaseHTTPRequestHandler):
             # 创建签到状态字典和座位号字典（使用学号作为键），默认状态改为"缺勤"
             checkin_status = {student_id: "缺勤" for student_id, _ in all_students}
             seat_numbers = {student_id: "-" for student_id, _ in all_students}  # 默认座位号为"-"
-            for student_id, _, seat_num, status in temp_checkins:  # 现在包含座位号
+            performances = {student_id: 0 for student_id, _ in all_students}  # 默认课堂表现为0
+            for student_id, _, seat_num, status, perf in temp_checkins:  # 现在包含座位号和课堂表现
                 if student_id in checkin_status:
                     checkin_status[student_id] = status
+                    if perf is not None:
+                        performances[student_id] = perf
                     # 只有"已签"状态才显示实际座位号，其他状态显示"-"
                     if status == "已签" and seat_num:
                         seat_numbers[student_id] = str(seat_num)
@@ -563,11 +567,14 @@ class CheckinHandler(BaseHTTPRequestHandler):
             
             # 生成HTML表格（无JavaScript）
             table_html = "<table border='1' style='width:100%; border-collapse: collapse;'>"
-            table_html += "<tr><th>学号</th><th>姓名</th><th>签到状态</th><th>座位号</th></tr>"  # 删除了 <th>操作</th>
+            table_html += "<tr><th>学号</th><th>姓名</th><th>签到状态</th><th>座位号</th><th>课堂表现</th></tr>"  # 删除了 <th>操作</th>
         
             for student_id, name in all_students:
                 status = checkin_status.get(student_id, "缺勤")
                 seat_num = seat_numbers.get(student_id, "-")
+                perf_val = performances.get(student_id, 0)
+                if isinstance(perf_val, float) and perf_val.is_integer():
+                    perf_val = int(perf_val)
                 table_html += f"""
             <tr>
                 <td>{student_id}</td>
@@ -585,6 +592,9 @@ class CheckinHandler(BaseHTTPRequestHandler):
                 </td>
                 <td>
                     <input type="text" name="seat_{student_id}" value="{seat_num}" style="width:60px;">
+                </td>
+                <td>
+                    <input type="number" step="any" name="performance_{student_id}" value="{perf_val}" style="width:60px;">
                 </td>
                 <!-- 删除了操作列 <td>...</td> -->
             </tr>"""
@@ -607,7 +617,7 @@ class CheckinHandler(BaseHTTPRequestHandler):
     .btn:hover {{ background-color: #45a049; }}
     .save-btn {{ background-color: #2196F3; }}
     .save-btn:hover {{ background-color: #0b7dda; }}
-    input[type="text"] {{
+    input[type="text"], input[type="number"] {{
         width: 60px;
         padding: 5px;
         border: 1px solid #ccc;
@@ -635,6 +645,46 @@ class CheckinHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
         self._safe_write("<h2>无效路径，请通过 /checkin/{教室ID}/admin.html 访问</h2>".encode('utf-8'))
+
+    def _render_records_select(self, classroom_id, course_name):
+        """渲染 view-records-select 页面：选择课程下的班级后再查看签到记录"""
+        classes = get_classes_by_course(course_name)
+        if classes:
+            options_html = "".join(f'<option value="{c}">{c}</option>' for c in classes)
+            form_html = f"""
+  <form method="POST" action="/checkin/{classroom_id}/view-records">
+    <input type="hidden" name="course" value="{course_name}">
+    <label for="class_name">选择班级：</label>
+    <select id="class_name" name="class_name" required style="padding:8px 10px; border:1px solid #ccc; border-radius:4px; min-width:240px;">{options_html}</select>
+    <button type="submit" class="btn" style="margin-left:8px;">查看签到记录</button>
+  </form>"""
+        else:
+            form_html = "<p>该课程暂无签到记录</p>"
+        
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>选择班级</title>
+  <style>
+    body {{ font-family: sans-serif; padding: 20px; background-color: #f5f5f5; }}
+    .container {{ max-width: 600px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+    .btn {{ display: inline-block; margin-top: 20px; padding: 10px 20px;
+           background-color: #4CAF50; color: white; text-decoration: none;
+           border: none; cursor: pointer; border-radius: 4px; }}
+    .btn:hover {{ background-color: #45a049; }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>选择班级</h2>
+    <p>课程：{course_name}</p>
+    {form_html}
+    <a href="/checkin/{classroom_id}/admin.html" class="btn">返回管理页面</a>
+  </div>
+</body>
+</html>"""
+        return html
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
@@ -763,11 +813,10 @@ body {{
             self._safe_write(html_resp.encode('utf-8'))
             return
 
-        # ✅ 查看签到记录
-        record_match = re.match(r'^/checkin/(\d{3,4})/view-records$', path)
-        if record_match:
-            classroom_id = record_match.group(1)
-            # 获取课程名称
+        # 新增：签到记录 - 班级选择页（从 admin"签到记录"按钮或"重新选择班级"进入）
+        record_select_match = re.match(r'^/checkin/(\d{3,4})/view-records-select$', path)
+        if record_select_match:
+            classroom_id = record_select_match.group(1)
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length).decode('utf-8')
             params = urllib.parse.parse_qs(body)
@@ -783,8 +832,45 @@ body {{
                 self._safe_write(html_resp.encode('utf-8'))
                 return
             
-            # 查询签到记录
-            records = get_checkin_summary_by_course(course_name)
+            html_resp = self._render_records_select(classroom_id, course_name)
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self._safe_write(html_resp.encode('utf-8'))
+            return
+        
+        # ✅ 查看签到记录
+        record_match = re.match(r'^/checkin/(\d{3,4})/view-records$', path)
+        if record_match:
+            classroom_id = record_match.group(1)
+            # 获取课程名称
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            params = urllib.parse.parse_qs(body)
+            course_name = params.get("course", [""])[0]
+            class_name = params.get("class_name", [""])[0]
+            
+            if not course_name:
+                html_resp = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>查询失败</title></head>
+<body><p>请输入课程名称</p><p><a href="/checkin/{classroom_id}/admin.html">返回</a></p></body></html>""".format(classroom_id=classroom_id)
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self._safe_write(html_resp.encode('utf-8'))
+                return
+            
+            # 未选择班级时返回班级选择页
+            if not class_name:
+                html_resp = self._render_records_select(classroom_id, course_name)
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self._safe_write(html_resp.encode('utf-8'))
+                return
+            
+            # 查询签到记录（仅所选班级）
+            records = get_checkin_summary_by_course(course_name, class_name)
             
             # 生成记录表格
             if records:
@@ -798,6 +884,7 @@ body {{
                     <td><input type="checkbox" name="export_record" value="{cbval}"></td>
                     <td>{record['course']}</td>
                     <td>{record['classroom_id']}</td>
+                    <td>{record['class_name']}</td>
                     <td>{record['class_total']}</td>
                     <td>{record['signed']}</td>
                     <td>{record['personal_leave']}</td>
@@ -818,12 +905,14 @@ body {{
                 </tr>"""
                 # 表格被包裹在一个表单内，表单提交时会发送所有被选中的 export_record 值
                 table_html = f"""
+            <p>课程：{course_name}｜班级：{class_name}</p>
             <form method="POST" action="/checkin/export-record">
             <table class="record-table">
                 <tr>
                     <th>选择</th>
                     <th>课程名称</th>
                     <th>教室ID</th>
+                    <th>班级名称</th>
                     <th>班级人数</th>
                     <th>已签</th>
                     <th>事假</th>
@@ -838,8 +927,21 @@ body {{
                 {table_rows}
             </table>
             <div style="margin-top:12px;">
+                <button type="button" class="btn-select" style="padding:8px 16px; background-color:#2196F3; color:white; border:none; cursor:pointer; border-radius:4px; margin-right:8px;" onclick="setAllCheckboxes(true)">全选</button>
+                <button type="button" class="btn-select" style="padding:8px 16px; background-color:#2196F3; color:white; border:none; cursor:pointer; border-radius:4px; margin-right:8px;" onclick="setAllCheckboxes(false)">全不选</button>
                 <button type="submit" class="btn-export">导出到xlsx文件</button>
             </div>
+            <script>
+            function setAllCheckboxes(checked) {{
+                document.querySelectorAll('input[name="export_record"]').forEach(function(cb) {{
+                    cb.checked = checked;
+                }});
+            }}
+            </script>
+            </form>
+            <form method="POST" action="/checkin/{classroom_id}/view-records-select" style="display:inline-block; margin-top:12px; margin-left:8px;">
+                <input type="hidden" name="course" value="{course_name}">
+                <button type="submit" class="btn-select" style="padding:8px 16px; background-color:#607D8B; color:white; border:none; cursor:pointer; border-radius:4px;">重新选择班级</button>
             </form>"""
             else:
                 table_html = "<p>未找到相关签到记录</p>"
@@ -1219,9 +1321,18 @@ body {{
             for student_id, name in all_students:
                 status_key = f"status_{student_id}"
                 seat_key = f"seat_{student_id}"
+                perf_key = f"performance_{student_id}"
                 
                 status_value = params.get(status_key, ["缺勤"])[0]
                 seat_input = params.get(seat_key, ["-"])[0].strip()
+                perf_input = params.get(perf_key, ["0"])[0].strip()
+                
+                if perf_input == "":
+                    perf_input = "0"
+                try:
+                    float(perf_input)
+                except ValueError:
+                    validation_errors.append(f"学号 {student_id}（{name}）：课堂表现 '{perf_input}' 不是有效数字")
                 
                 if status_value == "已签":
                     if seat_input == "" or seat_input == "-":
@@ -1264,12 +1375,18 @@ ul {{ margin-top: 10px; }}
             for student_id, name in all_students:
                 status_value = params.get(f"status_{student_id}", ["缺勤"])[0]
                 seat_input = params.get(f"seat_{student_id}", ["-"])[0].strip()
+                perf_input = params.get(f"performance_{student_id}", ["0"])[0].strip()
                 
                 seat_num = None
                 if status_value == "已签":
                     seat_num = int(seat_input)  # 已通过验证
                 
-                if add_temp_checkin(student_id, classroom_id, seat_num, status_value):
+                try:
+                    perf_value = float(perf_input) if perf_input else 0
+                except ValueError:
+                    perf_value = 0
+                
+                if add_temp_checkin(student_id, classroom_id, seat_num, status_value, perf_value):
                     updated_count += 1
             
             redirect_url = f"/checkin/{classroom_id}/view-by-student"

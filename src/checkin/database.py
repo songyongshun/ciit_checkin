@@ -36,6 +36,7 @@ def init_database():
             name TEXT NOT NULL,
             course TEXT,
             classroom_id TEXT NOT NULL,  
+            class_performance REAL NOT NULL DEFAULT 0,
             FOREIGN KEY (student_id) REFERENCES students (student_id)
         )
     ''')
@@ -49,6 +50,7 @@ def init_database():
             name TEXT NOT NULL,
             seat_number INTEGER,
             classroom_id TEXT NOT NULL,
+            class_performance REAL NOT NULL DEFAULT 0,
             FOREIGN KEY (student_id) REFERENCES students (student_id)
         )
     ''')
@@ -135,7 +137,7 @@ def save_checkin_records(classroom_id, course_name):
 
         # 1. 从 checkin-temp 获取该教室的所有签到记录
         cursor.execute("""
-            SELECT student_id, status, class_name, name 
+            SELECT student_id, status, class_name, name, class_performance 
             FROM "checkin-temp" 
             WHERE classroom_id = ?
         """, (classroom_id,))
@@ -147,10 +149,10 @@ def save_checkin_records(classroom_id, course_name):
         # 2. 插入到 checkin 表（主记录表）- 添加 classroom_id 字段, 状态从temp表获取
         cursor.executemany("""
             INSERT INTO checkin 
-            (student_id, status, save_time, class_name, name, course, classroom_id) 
-            VALUES (?, ?, datetime('now', 'localtime'), ?, ?, ?, ?)
+            (student_id, status, save_time, class_name, name, course, classroom_id, class_performance) 
+            VALUES (?, ?, datetime('now', 'localtime'), ?, ?, ?, ?, ?)
         """, [
-            (row[0], row[1], row[2], row[3], course_name, classroom_id)  # row[1] is status from temp table
+            (row[0], row[1], row[2], row[3], course_name, classroom_id, row[4])  # row[1] is status from temp table
             for row in temp_records
         ])
 
@@ -163,8 +165,8 @@ def save_checkin_records(classroom_id, course_name):
         conn.close()
 
 
-def get_checkin_summary_by_course(course_name):
-    """根据课程名称获取签到记录汇总（包含详细状态统计）"""
+def get_checkin_summary_by_course(course_name, class_name=None):
+    """根据课程名称获取签到记录汇总（包含详细状态统计），可选按班级筛选"""
     if not course_name:
         return []
         
@@ -193,6 +195,10 @@ def get_checkin_summary_by_course(course_name):
     
     rows = cursor.fetchall()
     
+    # 按班级筛选（class_name 不为空时）
+    if class_name:
+        rows = [r for r in rows if r[2] == class_name]
+
     # 获取班级总人数
     results = []
     for row in rows:
@@ -211,6 +217,7 @@ def get_checkin_summary_by_course(course_name):
         results.append({
             "course": course,
             "classroom_id": classroom_id,
+            "class_name": class_name,
             "class_total": class_student_count,
             "signed": signed or 0,
             "personal_leave": personal_leave or 0,
@@ -224,6 +231,21 @@ def get_checkin_summary_by_course(course_name):
     
     conn.close()
     return results
+
+
+def get_classes_by_course(course_name):
+    """获取指定课程已有签到记录的班级列表（去重、按班级名排序）"""
+    if not course_name:
+        return []
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT DISTINCT class_name FROM checkin WHERE course = ? ORDER BY class_name",
+        (course_name,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
 
 
 def get_temp_checkins_by_classroom(classroom_id):
@@ -252,7 +274,7 @@ def clear_temp_checkins(classroom_id):
     return count
 
 
-def add_temp_checkin(student_id, classroom_id, seat_number, status="已签"):
+def add_temp_checkin(student_id, classroom_id, seat_number, status="已签", class_performance=0):
     """添加临时签到记录，同一学生在同一教室只保留一条记录"""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
@@ -274,9 +296,9 @@ def add_temp_checkin(student_id, classroom_id, seat_number, status="已签"):
     # 插入新的签到记录
     cursor.execute('''
         INSERT INTO "checkin-temp" 
-        (student_id, status, class_name, name, seat_number, classroom_id) 
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (student_id, status, class_name, name, seat_number, classroom_id))
+        (student_id, status, class_name, name, seat_number, classroom_id, class_performance) 
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (student_id, status, class_name, name, seat_number, classroom_id, class_performance))
     
     conn.commit()
     conn.close()
@@ -344,14 +366,14 @@ def get_temp_checkins_with_ids_by_classroom(classroom_id):
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT student_id, name, seat_number, status
+        SELECT student_id, name, seat_number, status, class_performance
         FROM "checkin-temp" 
         WHERE classroom_id = ? 
         ORDER BY seat_number
     """, (classroom_id,))
     rows = cursor.fetchall()
     conn.close()
-    return [(row[0], row[1], row[2], row[3]) for row in rows]
+    return [(row[0], row[1], row[2], row[3], row[4]) for row in rows]
 
 
 def get_checkin_records_by_save_time(course, save_time, classroom_id):
